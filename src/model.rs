@@ -141,12 +141,8 @@ impl std::ops::BitAnd for Mods {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct GroupInfo {
-    pub name: String,
-    pub defined: bool,
-    pub span: Span,
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GroupId(pub(crate) usize);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DefineGroupError {
@@ -183,9 +179,6 @@ impl GroupTable {
         self.id_to_name.len()
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GroupId(pub(crate) usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Signal(pub libc::c_int);
