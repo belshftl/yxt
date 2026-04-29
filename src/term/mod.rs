@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+pub mod kitty;
 pub mod legacy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

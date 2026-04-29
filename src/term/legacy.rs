@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: MIT
 
-use crate::model::{Direction, Key, KeypadKey, Mods, Token};
+use crate::model::{Direction, Key, KeyEventKind, KeypadKey, Mods, Token};
 
 use super::TermMode;
 
 pub fn decode_c0(byte: u8) -> Option<Token> {
     // the name is slightly inaccurate, this also checks DEL and c < 0x20
     match byte {
-        b'\0' => Some(Token::Utf8 { ch: ' ', mods: Mods::CTRL }),
-        b'\t' => Some(Token::Key { key: Key::Tab, mods: Mods::EMPTY }),
-        b'\n' | b'\r' => Some(Token::Key { key: Key::Enter, mods: Mods::EMPTY }),
-        0x1b => Some(Token::Key { key: Key::Esc, mods: Mods::EMPTY }),
-        0x08 | 0x7f => Some(Token::Key { key: Key::Backspace, mods: Mods::EMPTY }),
+        b'\0' => Some(Token::press_utf8(' ', Mods::CTRL)),
+        b'\t' => Some(Token::press_key(Key::Tab, Mods::EMPTY)),
+        b'\n' | b'\r' => Some(Token::press_key(Key::Enter, Mods::EMPTY)),
+        0x1b => Some(Token::press_key(Key::Esc, Mods::EMPTY)),
+        0x08 | 0x7f => Some(Token::press_key(Key::Backspace, Mods::EMPTY)),
         1..=31 => {
             let table = b"abcdefghijklmnopqrstuvwxyz[\\]^_";
             let ch = table[(byte - 1) as usize] as char;
-            Some(Token::Utf8 { ch, mods: Mods::CTRL })
+            Some(Token::press_utf8(ch, Mods::CTRL))
         }
         _ => None,
     }
@@ -65,7 +65,91 @@ pub fn decode_ss3(body: &[u8], mode: TermMode) -> Option<Token> {
         _ => return None,
     };
 
-    Some(Token::Key { key, mods: Mods::EMPTY })
+    Some(Token::press_key(key, Mods::EMPTY))
+}
+
+pub fn decode_csi(body: &[u8], mode: TermMode) -> Option<Token> {
+    let ParsedCsi { n, m, final_byte, param_count } = parse_csi_params(body)?;
+
+    // https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+    // PC-Style Function Keys
+    //
+    // it's a table there but it's basically a bitfield with 1 added
+    let mods = if param_count > 1 && m > 1 { // do nothing on 0 or 1 (1-1 = 0)
+        let bits = m - 1; // remove the aforementioned 1
+        if bits & !0b1111 != 0 {
+            return None; // malformed input
+        }
+
+        let mut mods = Mods::EMPTY;
+        if bits & 1 != 0 { mods |= Mods::SHIFT; }
+        if bits & 2 != 0 { mods |= Mods::ALT; }
+        if bits & 4 != 0 { mods |= Mods::CTRL; }
+        if bits & 8 != 0 { mods |= Mods::META; }
+        mods
+    } else {
+        Mods::EMPTY
+    };
+
+    // vt-style sequences (CSI N ~)
+    if final_byte == b'~' {
+        if param_count < 1 || (param_count > 1 && m == 0) {
+            return None;
+        }
+        let key = match n {
+            2 => Key::Insert,
+            3 => Key::Delete,
+            5 => Key::PageUp,
+            6 => Key::PageDown,
+
+            // https://github.com/mobile-shell/mosh/issues/178
+            1 | 7 => Key::Home,
+            4 | 8 => Key::End,
+
+            11 => Key::Function(1),
+            12 => Key::Function(2),
+            13 => Key::Function(3),
+            14 => Key::Function(4),
+            15 => Key::Function(5),
+            17 => Key::Function(6),
+            18 => Key::Function(7),
+            19 => Key::Function(8),
+            20 => Key::Function(9),
+            21 => Key::Function(10),
+            23 => Key::Function(11),
+            24 => Key::Function(12),
+
+            _ => return None,
+        };
+
+        return Some(Token::press_key(key, mods));
+    }
+
+    // xterm-style sequences (CSI <X>)
+    if param_count > 0 && n != 1 {
+        return None;
+    }
+    let key = match final_byte {
+        b'A' => Key::Arrow(Direction::Up),
+        b'B' => Key::Arrow(Direction::Down),
+        b'C' => Key::Arrow(Direction::Right),
+        b'D' => Key::Arrow(Direction::Left),
+        b'H' => Key::Home,
+        b'F' => Key::End,
+
+        b'P' => Key::Function(1),
+        b'Q' => Key::Function(2),
+        b'R' => Key::Function(3),
+        b'S' => Key::Function(4),
+
+        b'E' if mode.deckpam || mode.kitty_flags != 0 => {
+            Key::Keypad(KeypadKey::Begin)
+        }
+
+        _ => return None,
+    };
+
+    Some(Token::press_key(key, mods))
 }
 
 fn read_u32(buf: &[u8], idx: &mut usize, max: u32) -> Option<u32> {
@@ -125,90 +209,13 @@ fn parse_csi_params(body: &[u8]) -> Option<ParsedCsi> {
     Some(ParsedCsi { n, m, final_byte: body[idx], param_count: 2 })
 }
 
-pub fn decode_csi(body: &[u8], mode: TermMode) -> Option<Token> {
-    let ParsedCsi { n, m, final_byte, param_count } = parse_csi_params(body)?;
-
-    // https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
-    // PC-Style Function Keys
-    //
-    // it's a table there but it's it's basically a bitfield with 1 added
-    let mods = if param_count > 1 && m > 1 { // do nothing on 0 or 1 (1-1 = 0)
-        let bits = m - 1; // remove the aforementioned 1
-        let mut mods = Mods::EMPTY;
-        if bits & 1 != 0 { mods |= Mods::SHIFT; }
-        if bits & 2 != 0 { mods |= Mods::ALT; }
-        if bits & 4 != 0 { mods |= Mods::CTRL; }
-        if bits & 8 != 0 { mods |= Mods::META; }
-        mods
-    } else {
-        Mods::EMPTY
-    };
-
-    // vt-style sequences (CSI N ~)
-    if final_byte == b'~' {
-        if param_count < 1 || (param_count > 1 && m == 0) {
-            return None;
-        }
-        let key = match n {
-            2 => Key::Insert,
-            3 => Key::Delete,
-            5 => Key::PageUp,
-            6 => Key::PageDown,
-
-            // https://github.com/mobile-shell/mosh/issues/178
-            1 | 7 => Key::Home,
-            4 | 8 => Key::End,
-
-            11 => Key::Function(1),
-            12 => Key::Function(2),
-            13 => Key::Function(3),
-            14 => Key::Function(4),
-            15 => Key::Function(5),
-            17 => Key::Function(6),
-            18 => Key::Function(7),
-            19 => Key::Function(8),
-            20 => Key::Function(9),
-            21 => Key::Function(10),
-            23 => Key::Function(11),
-            24 => Key::Function(12),
-
-            _ => return None,
-        };
-
-        return Some(Token::Key { key, mods });
-    }
-
-    // xterm-style sequences (CSI <X>)
-    if param_count > 0 && n != 1 {
+pub fn encode_token(token: &Token, mode: TermMode) -> Option<Vec<u8>> {
+    if token.kind() != KeyEventKind::Press {
         return None;
     }
-    let key = match final_byte {
-        b'A' => Key::Arrow(Direction::Up),
-        b'B' => Key::Arrow(Direction::Down),
-        b'C' => Key::Arrow(Direction::Right),
-        b'D' => Key::Arrow(Direction::Left),
-        b'H' => Key::Home,
-        b'F' => Key::End,
-
-        b'P' => Key::Function(1),
-        b'Q' => Key::Function(2),
-        b'R' => Key::Function(3),
-        b'S' => Key::Function(4),
-
-        b'E' if mode.deckpam || mode.kitty_flags != 0 => {
-            Key::Keypad(KeypadKey::Begin)
-        }
-
-        _ => return None,
-    };
-
-    Some(Token::Key { key, mods })
-}
-
-pub fn encode_token(token: &Token, mode: TermMode) -> Option<Vec<u8>> {
     match token {
-        Token::Utf8 { ch, mods } => encode_utf8(*ch, *mods),
-        Token::Key { key, mods } => encode_key(*key, *mods, mode),
+        Token::Utf8 { ch, mods, .. } => encode_utf8(*ch, *mods),
+        Token::Key { key, mods, .. } => encode_key(*key, *mods, mode),
     }
 }
 
@@ -375,9 +382,7 @@ fn encode_cursor(final_byte: u8, param: u8, mode: TermMode) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
-    use crate::model::{
-        Direction, Key, KeypadKey, Mods, Token,
-    };
+    use crate::model::{Direction, Key, KeypadKey, Mods, Token};
     use crate::term::TermMode;
 
     fn mode(decckm: bool, deckpam: bool) -> TermMode {
@@ -392,17 +397,15 @@ mod tests {
     fn decodes_c0_control_letters() {
         assert_eq!(
             decode_c0(1),
-            Some(Token::Utf8 { ch: 'a', mods: Mods::CTRL }),
+            Some(Token::press_utf8('a', Mods::CTRL)),
         );
-
         assert_eq!(
             decode_c0(26),
-            Some(Token::Utf8 { ch: 'z', mods: Mods::CTRL }),
+            Some(Token::press_utf8('z', Mods::CTRL)),
         );
-
         assert_eq!(
             decode_c0(27),
-            Some(Token::Key { key: Key::Esc, mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Esc, Mods::EMPTY)),
         );
     }
 
@@ -410,42 +413,36 @@ mod tests {
     fn decodes_c0_common_keys() {
         assert_eq!(
             decode_c0(b'\t'),
-            Some(Token::Key { key: Key::Tab, mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Tab, Mods::EMPTY)),
         );
-
         assert_eq!(
             decode_c0(b'\r'),
-            Some(Token::Key { key: Key::Enter, mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Enter, Mods::EMPTY)),
         );
-
         assert_eq!(
             decode_c0(0x7f),
-            Some(Token::Key { key: Key::Backspace, mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Backspace, Mods::EMPTY)),
         );
     }
 
     #[test]
     fn decodes_ss3_arrows_and_functions() {
         let m = mode(false, false);
-
         assert_eq!(
             decode_ss3(b"A", m),
-            Some(Token::Key { key: Key::Arrow(Direction::Up), mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Arrow(Direction::Up), Mods::EMPTY)),
         );
-
         assert_eq!(
             decode_ss3(b"D", m),
-            Some(Token::Key { key: Key::Arrow(Direction::Left), mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Arrow(Direction::Left), Mods::EMPTY)),
         );
-
         assert_eq!(
             decode_ss3(b"P", m),
-            Some(Token::Key { key: Key::Function(1), mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Function(1), Mods::EMPTY)),
         );
-
         assert_eq!(
             decode_ss3(b"S", m),
-            Some(Token::Key { key: Key::Function(4), mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Function(4), Mods::EMPTY)),
         );
     }
 
@@ -455,60 +452,51 @@ mod tests {
             decode_ss3(b"p", mode(false, false)),
             None
         );
-
         assert_eq!(
             decode_ss3(b"p", mode(false, true)),
-            Some(Token::Key { key: Key::Keypad(KeypadKey::Digit(0)), mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Keypad(KeypadKey::Digit(0)), Mods::EMPTY)),
         );
-
         assert_eq!(
             decode_ss3(b"M", mode(false, true)),
-            Some(Token::Key { key: Key::Keypad(KeypadKey::Enter), mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Keypad(KeypadKey::Enter), Mods::EMPTY)),
         );
     }
 
     #[test]
     fn decodes_csi_arrows() {
         let m = mode(false, false);
-
         assert_eq!(
             decode_csi(b"A", m),
-            Some(Token::Key { key: Key::Arrow(Direction::Up), mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Arrow(Direction::Up), Mods::EMPTY)),
         );
-
         assert_eq!(
             decode_csi(b"1;5D", m),
-            Some(Token::Key { key: Key::Arrow(Direction::Left), mods: Mods::CTRL }),
+            Some(Token::press_key(Key::Arrow(Direction::Left), Mods::CTRL)),
         );
-
         assert_eq!(
             decode_csi(b"1;4C", m),
-            Some(Token::Key { key: Key::Arrow(Direction::Right), mods: Mods::SHIFT | Mods::ALT }),
+            Some(Token::press_key(Key::Arrow(Direction::Right), Mods::SHIFT | Mods::ALT)),
         );
     }
 
     #[test]
     fn decodes_csi_vt_keys() {
         let m = mode(false, false);
-
         assert_eq!(
             decode_csi(b"2~", m),
-            Some(Token::Key { key: Key::Insert, mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Insert, Mods::EMPTY)),
         );
-
         assert_eq!(
             decode_csi(b"3;5~", m),
-            Some(Token::Key { key: Key::Delete, mods: Mods::CTRL }),
+            Some(Token::press_key(Key::Delete, Mods::CTRL)),
         );
-
         assert_eq!(
             decode_csi(b"15~", m),
-            Some(Token::Key { key: Key::Function(5), mods: Mods::EMPTY })
+            Some(Token::press_key(Key::Function(5), Mods::EMPTY))
         );
-
         assert_eq!(
             decode_csi(b"24;3~", m),
-            Some(Token::Key { key: Key::Function(12), mods: Mods::ALT }),
+            Some(Token::press_key(Key::Function(12), Mods::ALT)),
         );
     }
 
@@ -518,15 +506,13 @@ mod tests {
             decode_csi(b"E", mode(false, false)),
             None
         );
-
         assert_eq!(
             decode_csi(b"E", mode(false, true)),
-            Some(Token::Key { key: Key::Keypad(KeypadKey::Begin), mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY)),
         );
-
         assert_eq!(
             decode_csi(b"1;5E", mode(false, true)),
-            Some(Token::Key { key: Key::Keypad(KeypadKey::Begin), mods: Mods::CTRL }),
+            Some(Token::press_key(Key::Keypad(KeypadKey::Begin), Mods::CTRL)),
         );
 
         let kitty_mode = TermMode {
@@ -534,10 +520,9 @@ mod tests {
             deckpam: false,
             kitty_flags: 1,
         };
-
         assert_eq!(
             decode_csi(b"E", kitty_mode),
-            Some(Token::Key { key: Key::Keypad(KeypadKey::Begin), mods: Mods::EMPTY }),
+            Some(Token::press_key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY)),
         );
     }
 
@@ -545,23 +530,21 @@ mod tests {
     fn encodes_utf8_plain_and_legacy_mods() {
         assert_eq!(
             encode_token(
-                &Token::Utf8 { ch: 'x', mods: Mods::EMPTY },
+                &Token::press_utf8('x', Mods::EMPTY),
                 mode(false, false),
             ),
             Some(b"x".to_vec()),
         );
-
         assert_eq!(
             encode_token(
-                &Token::Utf8 { ch: 'x', mods: Mods::CTRL },
+                &Token::press_utf8('x', Mods::CTRL),
                 mode(false, false),
             ),
             Some(vec![0x18]),
         );
-
         assert_eq!(
             encode_token(
-                &Token::Utf8 { ch: 'x', mods: Mods::ALT },
+                &Token::press_utf8('x', Mods::ALT),
                 mode(false, false),
             ),
             Some(b"\x1bx".to_vec()),
@@ -572,23 +555,21 @@ mod tests {
     fn encodes_arrows_decckm_dependent() {
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Arrow(Direction::Up), mods: Mods::EMPTY },
+                &Token::press_key(Key::Arrow(Direction::Up), Mods::EMPTY),
                 mode(false, false),
             ),
             Some(b"\x1b[A".to_vec()),
         );
-
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Arrow(Direction::Up), mods: Mods::EMPTY },
+                &Token::press_key(Key::Arrow(Direction::Up), Mods::EMPTY),
                 mode(true, false),
             ),
             Some(b"\x1bOA".to_vec()),
         );
-
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Arrow(Direction::Up), mods: Mods::CTRL },
+                &Token::press_key(Key::Arrow(Direction::Up), Mods::CTRL),
                 mode(true, false),
             ),
             Some(b"\x1b[1;5A".to_vec()),
@@ -599,23 +580,21 @@ mod tests {
     fn encodes_vt_keys() {
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Insert, mods: Mods::EMPTY },
+                &Token::press_key(Key::Insert, Mods::EMPTY),
                 mode(false, false),
             ),
             Some(b"\x1b[2~".to_vec()),
         );
-
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Delete, mods: Mods::CTRL },
+                &Token::press_key(Key::Delete, Mods::CTRL),
                 mode(false, false),
             ),
             Some(b"\x1b[3;5~".to_vec()),
         );
-
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Function(12), mods: Mods::ALT },
+                &Token::press_key(Key::Function(12), Mods::ALT),
                 mode(false, false),
             ),
             Some(b"\x1b[24;3~".to_vec()),
@@ -626,23 +605,21 @@ mod tests {
     fn encodes_keypad_only_when_deckpam() {
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Keypad(KeypadKey::Digit(0)), mods: Mods::EMPTY },
+                &Token::press_key(Key::Keypad(KeypadKey::Digit(0)), Mods::EMPTY),
                 mode(false, false),
             ),
             None,
         );
-
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Keypad(KeypadKey::Digit(0)), mods: Mods::EMPTY },
+                &Token::press_key(Key::Keypad(KeypadKey::Digit(0)), Mods::EMPTY),
                 mode(false, true),
             ),
             Some(b"\x1bOp".to_vec()),
         );
-
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Keypad(KeypadKey::Enter), mods: Mods::EMPTY },
+                &Token::press_key(Key::Keypad(KeypadKey::Enter), Mods::EMPTY),
                 mode(false, true),
             ),
             Some(b"\x1bOM".to_vec()),
@@ -653,23 +630,21 @@ mod tests {
     fn encodes_keypad_begin_only_when_deckpam() {
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Keypad(KeypadKey::Begin), mods: Mods::EMPTY },
+                &Token::press_key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY),
                 mode(false, false),
             ),
             None,
         );
-
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Keypad(KeypadKey::Begin), mods: Mods::EMPTY },
+                &Token::press_key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY),
                 mode(false, true),
             ),
             Some(b"\x1b[E".to_vec()),
         );
-
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Keypad(KeypadKey::Begin), mods: Mods::CTRL },
+                &Token::press_key(Key::Keypad(KeypadKey::Begin), Mods::CTRL),
                 mode(false, true),
             ),
             Some(b"\x1b[1;5E".to_vec()),
@@ -680,7 +655,7 @@ mod tests {
     fn legacy_rejects_mods_it_cannot_encode() {
         assert_eq!(
             encode_token(
-                &Token::Key { key: Key::Arrow(Direction::Up), mods: Mods::SUPER },
+                &Token::press_key(Key::Arrow(Direction::Up), Mods::SUPER),
                 mode(false, false),
             ),
             None,

@@ -117,6 +117,12 @@ impl Mods {
     pub const SUPER: Self = Self(1 << 3);
     pub const HYPER: Self = Self(1 << 4);
     pub const META: Self = Self(1 << 5);
+
+    pub const KITTY_IGNORED_LOCK_BITS: u16 = (1 << 6) | (1 << 7); // caps_lock, num_lock
+
+    pub fn raw(self) -> u16 {
+        self.0
+    }
 }
 
 impl std::ops::Not for Mods {
@@ -150,6 +156,13 @@ impl std::ops::BitAndAssign for Mods {
     fn bitand_assign(&mut self, rhs: Self) {
         *self = *self & rhs;
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyEventKind {
+    Press,
+    Repeat,
+    Release,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -205,11 +218,44 @@ pub enum Token {
     Utf8 {
         ch: char,
         mods: Mods,
+        kind: KeyEventKind,
     },
     Key {
         key: Key,
         mods: Mods,
+        kind: KeyEventKind,
     },
+}
+
+impl Token {
+    pub fn press_utf8(ch: char, mods: Mods) -> Self {
+        Self::Utf8 {
+            ch,
+            mods,
+            kind: KeyEventKind::Press,
+        }
+    }
+
+    pub fn press_key(key: Key, mods: Mods) -> Self {
+        Self::Key {
+            key,
+            mods,
+            kind: KeyEventKind::Press,
+        }
+    }
+
+    pub fn kind(&self) -> KeyEventKind {
+        match self {
+            Self::Utf8 { kind, .. } | Self::Key { kind, .. } => *kind,
+        }
+    }
+
+    pub fn with_kind(self, kind: KeyEventKind) -> Self {
+        match self {
+            Self::Utf8 { ch, mods, .. } => Self::Utf8 { ch, mods, kind },
+            Self::Key { key, mods, .. } => Self::Key { key, mods, kind },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

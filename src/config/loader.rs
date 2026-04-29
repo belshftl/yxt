@@ -366,10 +366,10 @@ group("reload") => act_shell("reload")
         assert_eq!(cfg.mappings.len(), 2);
         assert_eq!(
             cfg.mappings[0].from,
-            Source::Token(Token::Key {
-                key: Key::Function(5),
-                mods: Mods::EMPTY,
-            }),
+            Source::Token(Token::press_key(
+                Key::Function(5),
+                Mods::EMPTY,
+            )),
         );
         assert!(matches!(cfg.mappings[0].to, Target::Group(_)));
         assert_eq!(

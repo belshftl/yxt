@@ -263,7 +263,7 @@ fn lower_tok_utf8(args: Vec<Arg>, span: Span, ctor: String) -> Result<Entity, Co
         return Err(ConfigError::BadEntityArgs { name: ctor, span });
     }
     let mods = lower_mods(args, span)?;
-    Ok(Entity::Token(Token::Utf8 { ch, mods }))
+    Ok(Entity::Token(Token::press_utf8(ch, mods)))
 }
 
 fn lower_tok_key(args: Vec<Arg>, span: Span, ctor: String) -> Result<Entity, ConfigError> {
@@ -273,7 +273,7 @@ fn lower_tok_key(args: Vec<Arg>, span: Span, ctor: String) -> Result<Entity, Con
     };
     let key = lower_key_name(&v, span)?;
     let mods = lower_mods(args, span)?;
-    Ok(Entity::Token(Token::Key { key, mods }))
+    Ok(Entity::Token(Token::press_key(key, mods)))
 }
 
 fn lower_mods(args: impl IntoIterator<Item = Arg>, span: Span) -> Result<Mods, ConfigError> {
