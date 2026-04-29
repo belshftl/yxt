@@ -283,10 +283,10 @@ fn lower_mods(args: impl IntoIterator<Item = Arg>, span: Span) -> Result<Mods, C
             return Err(ConfigError::BadModifier { span });
         };
         let bit = lower_mod_name(&name, span)?;
-        if mods.contains(bit) {
+        if (mods & bit) != Mods::EMPTY {
             return Err(ConfigError::DuplicateModifier { name, span });
         }
-        mods.insert(bit);
+        mods |= bit;
     }
     Ok(mods)
 }

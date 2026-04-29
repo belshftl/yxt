@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-use std::collections::HashMap;
+use std::{collections::HashMap};
 
 use crate::config::{line::Span, options::Options};
 
@@ -117,13 +117,12 @@ impl Mods {
     pub const SUPER: Self = Self(1 << 3);
     pub const HYPER: Self = Self(1 << 4);
     pub const META: Self = Self(1 << 5);
+}
 
-    pub fn insert(&mut self, other: Self) {
-        self.0 |= other.0;
-    }
-
-    pub fn contains(self, other: Self) -> bool {
-        (self.0 & other.0) == other.0
+impl std::ops::Not for Mods {
+    type Output = Self;
+    fn not(self) -> Self::Output {
+        Self(!self.0)
     }
 }
 
@@ -134,10 +133,22 @@ impl std::ops::BitOr for Mods {
     }
 }
 
+impl std::ops::BitOrAssign for Mods {
+    fn bitor_assign(&mut self, rhs: Self) {
+        *self = *self | rhs;
+    }
+}
+
 impl std::ops::BitAnd for Mods {
     type Output = Self;
     fn bitand(self, rhs: Self) -> Self::Output {
         Self(self.0 & rhs.0)
+    }
+}
+
+impl std::ops::BitAndAssign for Mods {
+    fn bitand_assign(&mut self, rhs: Self) {
+        *self = *self & rhs;
     }
 }
 
