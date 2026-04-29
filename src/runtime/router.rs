@@ -16,7 +16,7 @@ pub struct RouteResult {
     pub effects: Vec<RouteEffect>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum RouteError {
     GroupCycle {
         stack: Vec<GroupId>,

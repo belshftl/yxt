@@ -71,7 +71,7 @@ impl ConfigLoader {
         if self.version.is_none() {
             return Err(ConfigLoadError::MissingVersion { path });
         }
-        self.builder.finish().map_err(|e| ConfigLoadError::Semantic(e))
+        self.builder.finish().map_err(ConfigLoadError::Semantic)
     }
 
     fn parse_one_file(&mut self, path: &Path, is_root: bool) -> Result<(), ConfigLoadError> {
@@ -102,7 +102,7 @@ impl ConfigLoader {
                 file,
                 line: line_no,
             };
-            if let Some(stmt) = parse_line(line, ctx).map_err(|e| ConfigLoadError::Syntax(e))? {
+            if let Some(stmt) = parse_line(line, ctx).map_err(ConfigLoadError::Syntax)? {
                 self.apply_parsed_stmt(stmt, is_root, base_dir, &mut seen_non_version_stmt_here)?;
             }
         }
@@ -135,7 +135,7 @@ impl ConfigLoader {
                 }
                 *seen_non_version_stmt_here = true;
                 self.seen_non_version_stmt = true;
-                self.builder.apply_stmt(other).map_err(|e| ConfigLoadError::Semantic(e))
+                self.builder.apply_stmt(other).map_err(ConfigLoadError::Semantic)
             }
         }
     }

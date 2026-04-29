@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-use std::{borrow::Cow, fmt};
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileId(pub(crate) usize);
@@ -95,32 +95,42 @@ impl Stmt {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ErrorKind {
+    #[error("expected {0}")]
     Expected(&'static str),
+
+    #[error("unknown statement")]
     UnknownStatement,
+
+    #[error("unterminated string")]
     UnterminatedString,
+
+    #[error("invalid escape sequence \\{}", .0.escape_default())]
     InvalidEscape(char),
+
+    #[error("invalid identifier")]
     InvalidIdentifier,
+
+    #[error("invalid integer")]
     InvalidInteger,
+
+    #[error("integer out of range")]
     IntegerOutOfRange,
+
+    #[error("trailing input")]
     TrailingInput,
+
+    #[error("multiple mapping operators")]
     MultipleMappingOperators,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{kind} at byte {}..{}", .span.start, .span.end)]
 pub struct ParseError {
     pub kind: ErrorKind,
     pub span: Span,
 }
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} at byte {}..{}", self.kind, self.span.start, self.span.end)
-    }
-}
-
-impl std::error::Error for ParseError {}
 
 pub fn parse_line(line: &str, ctx: LineCtx) -> Result<Option<Stmt>, ParseError> {
     let line = strip_line_ending(line, ctx)?;

@@ -168,7 +168,7 @@ pub enum KeyEventKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GroupId(pub(crate) usize);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DefineGroupError {
     Duplicate(String),
 }

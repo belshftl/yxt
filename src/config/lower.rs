@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT
 
-use std::fmt;
-
 use crate::config::line::{Arg, Expr, Literal, MappingOp, Span, Stmt};
 use crate::config::options::Options;
 use crate::model::{
@@ -26,58 +24,70 @@ impl LiteralKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use thiserror::Error;
+
+#[derive(Debug, Clone, Error)]
 pub enum ConfigError {
+    #[error("unknown directive '@{name}'")]
     UnknownDirective { name: String, span: Span },
+
+    #[error("bad arguments for directive '@{name}'")]
     BadDirectiveArgs { name: String, span: Span },
+
+    #[error("unknown definition kind '{kind}'")]
     UnknownDefinition { kind: String, span: Span },
+
+    #[error("bad arguments for definition '{kind}'")]
     BadDefinitionArgs { kind: String, span: Span },
+
+    #[error("duplicate group '{name}'")]
     DuplicateGroup { name: String, span: Span },
+
+    #[error("unknown group '{name}'")]
     UnknownGroup { name: String, span: Span },
+
+    #[error("unknown option '{name}'")]
     UnknownOption { name: String, span: Span },
+
+    #[error("wrong literal type: expected '{expected:?}', got '{got:?}'")]
     WrongLiteralType { expected: LiteralKind, got: LiteralKind, span: Span },
+
+    #[error("unknown entity constructor '{name}'")]
     UnknownEntity { name: String, span: Span },
+
+    #[error("bad arguments for entity '{name}'")]
     BadEntityArgs { name: String, span: Span },
+
+    #[error("unknown signal '{name}'")]
     UnknownSignal { name: String, span: Span },
+
+    #[error("signal '{name}' is {reason}")]
     UnsupportedSignal { name: String, reason: &'static str, span: Span },
+
+    #[error("tok_utf8() string must be a single unicode character")]
     TokUtf8NeedsOneChar { span: Span },
+
+    #[error("unknown key '{name}'")]
     UnknownKey { name: String, span: Span },
+
+    #[error("unknown modifier '{name}'")]
     UnknownModifier { name: String, span: Span },
+
+    #[error("duplicate modifier '{name}'")]
     DuplicateModifier { name: String, span: Span },
+
+    #[error("bad modifier argument")]
     BadModifier { span: Span },
+
+    #[error("action cannot be used as mapping source")]
     ActionAsSource { span: Span },
+
+    #[error("event cannot be used as mapping target")]
     EventAsTarget { span: Span },
+
+    #[error("cannot map a group to itself")]
     GroupSelfMap { span: Span },
 }
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownDirective { name, .. } => write!(f, "unknown directive '@{name}'"),
-            Self::BadDirectiveArgs { name, .. } => write!(f, "bad arguments for directive '@{name}'"),
-            Self::UnknownDefinition { kind, .. } => write!(f, "unknown definition kind '{kind}'"),
-            Self::BadDefinitionArgs { kind, .. } => write!(f, "bad arguments for definition '{kind}'"),
-            Self::DuplicateGroup { name, .. } => write!(f, "duplicate group '{name:?}'"),
-            Self::UnknownGroup { name, .. } => write!(f, "unknown group '{name:?}'"),
-            Self::UnknownOption { name, .. } => write!(f, "unknown option '{name}'"),
-            Self::WrongLiteralType { expected, got, .. } => write!(f, "wrong literal type: expected '{expected:?}', got '{got:?}'"),
-            Self::UnknownEntity { name, .. } => write!(f, "unknown entity constructor '{name}'"),
-            Self::BadEntityArgs { name, .. } => write!(f, "bad arguments for entity '{name}'"),
-            Self::UnknownSignal { name, .. } => write!(f, "unknown signal '{name}'"),
-            Self::UnsupportedSignal { name, reason, .. } => write!(f, "signal '{name}' is {reason}"),
-            Self::TokUtf8NeedsOneChar { .. } => write!(f, "tok_utf8() string must be a single unicode character"),
-            Self::UnknownKey { name, .. } => write!(f, "unknown key '{name}'"),
-            Self::UnknownModifier { name, .. } => write!(f, "unknown modifier '{name}'"),
-            Self::DuplicateModifier { name, .. } => write!(f, "duplicate modifier '{name}'"),
-            Self::BadModifier { .. } => write!(f, "bad modifier argument"),
-            Self::ActionAsSource { .. } => write!(f, "action cannot be used as mapping source"),
-            Self::EventAsTarget { .. } => write!(f, "event cannot be used as mapping target"),
-            Self::GroupSelfMap { .. } => write!(f, "cannot map a group to itself"),
-        }
-    }
-}
-
-impl std::error::Error for ConfigError {}
 
 #[derive(Debug)]
 pub struct ConfigBuilder {
