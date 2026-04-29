@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-use crate::config::line::{Literal, Span};
-use crate::config::lower::{ConfigError, LiteralKind};
+use super::line::{Literal, Span};
+use super::lower::{ConfigError, LiteralKind};
 
 #[derive(Debug, Clone)]
 pub struct Options {

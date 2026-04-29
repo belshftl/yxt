@@ -478,6 +478,7 @@ dependencies = [
 name = "yxt"
 version = "0.1.0"
 dependencies = [
+ "cfg-if",
  "libc",
  "signal-hook",
  "tempfile",

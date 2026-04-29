@@ -2,9 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::config::line::{parse_line, Arg, FileId, LineCtx, ParseError, Span, Stmt};
-use crate::config::lower::{ConfigBuilder, ConfigError};
 use crate::model::Config;
+
+use super::line::{parse_line, Arg, FileId, LineCtx, ParseError, Span, Stmt};
+use super::lower::{ConfigBuilder, ConfigError};
 
 #[derive(Debug)]
 pub struct SourceFile {

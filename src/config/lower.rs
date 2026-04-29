@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 
-use crate::config::line::{Arg, Expr, Literal, MappingOp, Span, Stmt};
-use crate::config::options::Options;
 use crate::model::{
     Action, DefineGroupError, Config, Direction, Event, GroupId, GroupTable, Key, KeypadKey,
     Mapping, MediaKey, ModifierKey, Mods, Service, Signal, Source, Target, Token,
 };
+
+use super::line::{Arg, Expr, Literal, MappingOp, Span, Stmt};
+use super::options::Options;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiteralKind {

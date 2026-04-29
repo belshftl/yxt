@@ -100,12 +100,23 @@ pub fn set_winsize(fd: impl AsFd, ws: &winsize) -> std::io::Result<()> {
     }
 }
 
-pub fn make_controlling_terminal(fd: RawFd) -> std::io::Result<()> {
-    if unsafe { libc::ioctl(fd, libc::TIOCSCTTY, 0) } < 0 {
-        Err(Error::last_os_error())
-    } else {
-        Ok(())
+// SAFETY: intended to be called in a pre_exec() closure, so this must be async-signal-safe; since
+// the closure's signature expects `std::io::Result<()>`, it's only safe to assume that
+// constructing one via `last_os_error` / `from_raw_os_error` is safe
+pub unsafe fn switch_to_ctty(fd: RawFd) -> std::io::Result<()> {
+    // setsid(2) is listed as async-signal-safe in signal-safety(7)
+    if unsafe { libc::setsid() } < 0 {
+        return Err(Error::last_os_error());
     }
+
+    // ioctl(TIOCSCTTY) is not POSIX so there's no standard to refer to, but it's likely safe to
+    // assume it's async-signal-safe since it's the standard pty/session setup and the libc
+    // function should typically be a thin wrapper over a syscall
+    if unsafe { libc::ioctl(fd, libc::TIOCSCTTY, 0) } < 0 {
+        return Err(Error::last_os_error());
+    }
+
+    Ok(())
 }
 
 pub struct PtyPair {
