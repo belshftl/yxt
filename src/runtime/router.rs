@@ -16,8 +16,9 @@ pub struct RouteResult {
     pub effects: Vec<RouteEffect>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RouteError {
+    #[error("group cycle detected")]
     GroupCycle {
         stack: Vec<GroupId>,
         repeated: GroupId,

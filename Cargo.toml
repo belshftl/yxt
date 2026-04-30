@@ -1,10 +1,10 @@
 [package]
 name = "yxt"
-version = "0.1.0"
+version = "0.1.0-alpha"
 edition = "2024"
 
 [dependencies]
-cfg-if = "1"
+lexopt = "0.3"
 libc = "0.2"
 signal-hook = "0.4"
 thiserror = "2"

@@ -6,8 +6,6 @@ use crate::model::{Key, KeyEventKind, Mods, Token};
 
 use super::{kitty, legacy, TermMode};
 
-const DEFAULT_MAX_PENDING_BYTES: usize = 4096;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decoded {
     Token(Token),
