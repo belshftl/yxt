@@ -6,7 +6,6 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
-
 use libc::{termios, winsize};
 
 #[derive(Debug)]
@@ -127,19 +126,19 @@ pub struct PtyPair {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PtyOpenError {
-    #[error("posix_openpt failed: {0}")]
+    #[error("posix_openpt: {0}")]
     PosixOpenpt(std::io::Error),
 
-    #[error("grantpt failed: {0}")]
+    #[error("grantpt: {0}")]
     Grantpt(std::io::Error),
 
-    #[error("unlockpt failed: {0}")]
+    #[error("unlockpt: {0}")]
     Unlockpt(std::io::Error),
 
-    #[error("ptsname failed: {0}")]
+    #[error("ptsname: {0}")]
     Ptsname(std::io::Error),
 
-    #[error("opening slave PTY failed: {0}")]
+    #[error("open() slave PTY: {0}")]
     OpenSlave(std::io::Error),
 }
 

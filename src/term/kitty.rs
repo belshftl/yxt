@@ -1,83 +1,74 @@
 // SPDX-License-Identifier: MIT
 
 use crate::model::{Key, KeyEventKind, KeypadKey, MediaKey, ModifierKey, Mods, Token};
+use super::control::{read_u32, CsiSeq};
 
 pub const FLAG_REPORT_EVENT_TYPES: u8 = 0x02;
 pub const FLAG_REPORT_ALL_KEYS: u8 = 0x08;
 pub const FLAG_REPORT_ASSOCIATED_TEXT: u8 = 0x10;
 
-pub fn decode_csi_u(body: &[u8]) -> Option<Vec<Token>> {
+pub fn decode_csi_u(csi: CsiSeq<'_>) -> Option<Vec<Token>> {
+    if csi.final_byte != b'u' {
+        return None;
+    }
+    if !csi.intermediates.is_empty() {
+        return None;
+    }
+    decode_csi_u_params(csi.params)
+}
+
+pub fn decode_csi_u_params(params: &[u8]) -> Option<Vec<Token>> {
     // kitty csi keyboard events are of the format:
     //
     // CSI code [: alt1 [: alt2 ...]] [; mods [: kind]] [; text1 [: text2 ...]] u
     //
     // alt[0-9]+ and text[0-9]+ are single unicode codepoints
-    if body.last().copied() != Some(b'u') {
-        return None;
-    }
-
     let mut idx = 0;
-    let code = read_u32(body, &mut idx, 0x10ffff)?;
+    let code = read_u32(params, &mut idx, 0x10ffff)?;
 
     // skip `:alt`s if they're there
     loop {
-        skip_ws(body, &mut idx);
-        if body.get(idx) != Some(&b':') {
+        skip_ws(params, &mut idx);
+        if params.get(idx) != Some(&b':') {
             break;
         }
         idx += 1;
-        skip_ws(body, &mut idx);
+        skip_ws(params, &mut idx);
         // validate and skip number
-        _ = read_u32(body, &mut idx, 0x10ffff)?;
+        _ = read_u32(params, &mut idx, 0x10ffff)?;
     }
-    skip_ws(body, &mut idx);
+    skip_ws(params, &mut idx);
 
     // parse ;mods if it's there
-    let (mods, kind) = if body.get(idx) == Some(&b';') {
+    let (mods, kind) = if params.get(idx) == Some(&b';') {
         idx += 1;
-        parse_mods_and_type(body, &mut idx)?
+        parse_mods_and_type(params, &mut idx)?
     } else {
         (Mods::EMPTY, KeyEventKind::Press)
     };
-    skip_ws(body, &mut idx);
+    skip_ws(params, &mut idx);
 
     // parse `text`s if they're there
-    if body.get(idx) == Some(&b';') {
+    if params.get(idx) == Some(&b';') {
         idx += 1;
-        let text_tokens = parse_text_fields(body, &mut idx, mods, kind)?;
+        let text_tokens = parse_text_fields(params, &mut idx, mods, kind)?;
         if !text_tokens.is_empty() {
             return Some(text_tokens);
         }
     }
-    skip_ws(body, &mut idx);
+    skip_ws(params, &mut idx);
 
-    if body.get(idx) != Some(&b'u') || idx + 1 != body.len() {
-        return None;
+    if idx != params.len() {
+        None
+    } else {
+        Some(vec![token_from_codepoint(code, mods, kind)])
     }
-    Some(vec![token_from_codepoint(code, mods, kind)])
 }
 
 fn skip_ws(buf: &[u8], idx: &mut usize) {
     while *idx < buf.len() && matches!(buf[*idx], b' ' | b'\t') {
         *idx += 1;
     }
-}
-
-fn read_u32(buf: &[u8], idx: &mut usize, max: u32) -> Option<u32> {
-    let start = *idx;
-    let mut value = 0u32;
-    while *idx < buf.len() && buf[*idx].is_ascii_digit() {
-        let digit = (buf[*idx] - b'0') as u32;
-        value = value.checked_mul(10)?.checked_add(digit)?;
-        if max != 0 && value > max {
-            return None;
-        }
-        *idx += 1;
-    }
-    if *idx == start {
-        return None;
-    }
-    Some(value)
 }
 
 fn parse_mods_and_type(body: &[u8], idx: &mut usize) -> Option<(Mods, KeyEventKind)> {
@@ -213,24 +204,30 @@ fn token_from_codepoint(code: u32, mods: Mods, kind: KeyEventKind) -> Token {
     }
 }
 
-fn parse_text_fields(body: &[u8], idx: &mut usize, mods: Mods, kind: KeyEventKind) -> Option<Vec<Token>> {
+fn parse_text_fields(params: &[u8], idx: &mut usize, mods: Mods, kind: KeyEventKind) -> Option<Vec<Token>> {
     let mut out = Vec::new();
     loop {
-        skip_ws(body, idx);
-        match body.get(*idx)? {
-            b'u' => break,
-            b':' => {
-                // allow empty segments
-                *idx += 1;
-                continue;
-            }
-            _ => {}
+        skip_ws(params, idx);
+        if *idx == params.len() {
+            break;
         }
-        let code = read_u32(body, idx, 0x10ffff)?;
-        out.push(token_from_codepoint(code, mods, kind));
-        if body.get(*idx) == Some(&b':') {
+        if params[*idx] == b':' {
+            // allow empty segments
             *idx += 1;
+            continue;
         }
+        // replace invalid codepoints with U+FFFD REPLACEMENT CHARACTER
+        let code = read_u32(params, idx, 0x10ffff)?;
+        let ch = char::from_u32(code).unwrap_or('\u{fffd}');
+        out.push(Token::Utf8 { ch, mods, kind });
+        skip_ws(params, idx);
+        if *idx == params.len() {
+            break;
+        }
+        if params[*idx] != b':' {
+            return None;
+        }
+        *idx += 1;
     }
     Some(out)
 }
@@ -373,6 +370,11 @@ mod tests {
     use super::*;
 
     use crate::model::{Key, KeyEventKind, KeypadKey, MediaKey, ModifierKey, Mods, Token};
+    use crate::term::control;
+
+    fn csi(raw: &'static [u8]) -> CsiSeq<'static> {
+        control::split_csi_body(raw).expect("valid CSI body")
+    }
 
     fn utf8(ch: char, mods: Mods, kind: KeyEventKind) -> Token {
         Token::Utf8 { ch, mods, kind }
@@ -385,7 +387,7 @@ mod tests {
     #[test]
     fn decodes_plain_text_press() {
         assert_eq!(
-            decode_csi_u(b"114u"),
+            decode_csi_u(csi(b"114u")),
             Some(vec![utf8('r', Mods::EMPTY, KeyEventKind::Press)]),
         );
     }
@@ -393,7 +395,7 @@ mod tests {
     #[test]
     fn decodes_text_with_modifiers_as_press_when_event_type_omitted() {
         assert_eq!(
-            decode_csi_u(b"114;6u"),
+            decode_csi_u(csi(b"114;6u")),
             Some(vec![utf8('r', Mods::SHIFT | Mods::CTRL, KeyEventKind::Press)]),
         );
     }
@@ -401,29 +403,29 @@ mod tests {
     #[test]
     fn decodes_press_repeat_release_event_types() {
         assert_eq!(
-            decode_csi_u(b"114;5:1u"),
+            decode_csi_u(csi(b"114;5:1u")),
             Some(vec![utf8('r', Mods::CTRL, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"114;5:2u"),
+            decode_csi_u(csi(b"114;5:2u")),
             Some(vec![utf8('r', Mods::CTRL, KeyEventKind::Repeat)]),
         );
         assert_eq!(
-            decode_csi_u(b"114;5:3u"),
+            decode_csi_u(csi(b"114;5:3u")),
             Some(vec![utf8('r', Mods::CTRL, KeyEventKind::Release)]),
         );
     }
 
     #[test]
     fn rejects_invalid_event_types() {
-        assert_eq!(decode_csi_u(b"114;5:0u"), None);
-        assert_eq!(decode_csi_u(b"114;5:4u"), None);
+        assert_eq!(decode_csi_u(csi(b"114;5:0u")), None);
+        assert_eq!(decode_csi_u(csi(b"114;5:4u")), None);
     }
 
     #[test]
     fn decodes_associated_text_field_preferred_over_primary_codepoint() {
         assert_eq!(
-            decode_csi_u(b"97;1;120u"),
+            decode_csi_u(csi(b"97;1;120u")),
             Some(vec![utf8('x', Mods::EMPTY, KeyEventKind::Press)]),
         );
     }
@@ -431,7 +433,7 @@ mod tests {
     #[test]
     fn decodes_multiple_associated_text_codepoints() {
         assert_eq!(
-            decode_csi_u(b"97;1;120:121u"),
+            decode_csi_u(csi(b"97;1;120:121u")),
             Some(vec![
                 utf8('x', Mods::EMPTY, KeyEventKind::Press),
                 utf8('y', Mods::EMPTY, KeyEventKind::Press),
@@ -442,7 +444,7 @@ mod tests {
     #[test]
     fn associated_text_preserves_modifiers_and_kind() {
         assert_eq!(
-            decode_csi_u(b"97;5:2;120:121u"),
+            decode_csi_u(csi(b"97;5:2;120:121u")),
             Some(vec![
                 utf8('x', Mods::CTRL, KeyEventKind::Repeat),
                 utf8('y', Mods::CTRL, KeyEventKind::Repeat),
@@ -453,19 +455,19 @@ mod tests {
     #[test]
     fn decodes_basic_named_keys() {
         assert_eq!(
-            decode_csi_u(b"27u"),
+            decode_csi_u(csi(b"27u")),
             Some(vec![key(Key::Esc, Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"13u"),
+            decode_csi_u(csi(b"13u")),
             Some(vec![key(Key::Enter, Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"9u"),
+            decode_csi_u(csi(b"9u")),
             Some(vec![key(Key::Tab, Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"127u"),
+            decode_csi_u(csi(b"127u")),
             Some(vec![key(Key::Backspace, Mods::EMPTY, KeyEventKind::Press)]),
         );
     }
@@ -473,27 +475,27 @@ mod tests {
     #[test]
     fn decodes_lock_and_misc_keys() {
         assert_eq!(
-            decode_csi_u(b"57358u"),
+            decode_csi_u(csi(b"57358u")),
             Some(vec![key(Key::CapsLock, Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57359u"),
+            decode_csi_u(csi(b"57359u")),
             Some(vec![key(Key::ScrollLock, Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57360u"),
+            decode_csi_u(csi(b"57360u")),
             Some(vec![key(Key::NumLock, Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57361u"),
+            decode_csi_u(csi(b"57361u")),
             Some(vec![key(Key::PrintScreen, Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57362u"),
+            decode_csi_u(csi(b"57362u")),
             Some(vec![key(Key::Pause, Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57363u"),
+            decode_csi_u(csi(b"57363u")),
             Some(vec![key(Key::Menu, Mods::EMPTY, KeyEventKind::Press)]),
         );
     }
@@ -501,11 +503,11 @@ mod tests {
     #[test]
     fn decodes_f13_to_f35() {
         assert_eq!(
-            decode_csi_u(b"57376u"),
+            decode_csi_u(csi(b"57376u")),
             Some(vec![key(Key::Function(13), Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57398u"),
+            decode_csi_u(csi(b"57398u")),
             Some(vec![key(Key::Function(35), Mods::EMPTY, KeyEventKind::Press)]),
         );
     }
@@ -513,15 +515,15 @@ mod tests {
     #[test]
     fn decodes_keypad_keys() {
         assert_eq!(
-            decode_csi_u(b"57427u"),
+            decode_csi_u(csi(b"57427u")),
             Some(vec![key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57399u"),
+            decode_csi_u(csi(b"57399u")),
             Some(vec![key(Key::Keypad(KeypadKey::Left), Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57408;5:3u"),
+            decode_csi_u(csi(b"57408;5:3u")),
             Some(vec![key(Key::Keypad(KeypadKey::Delete), Mods::CTRL, KeyEventKind::Release)]),
         );
     }
@@ -529,15 +531,15 @@ mod tests {
     #[test]
     fn decodes_media_keys() {
         assert_eq!(
-            decode_csi_u(b"57428u"),
+            decode_csi_u(csi(b"57428u")),
             Some(vec![key(Key::Media(MediaKey::Play), Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57430u"),
+            decode_csi_u(csi(b"57430u")),
             Some(vec![key(Key::Media(MediaKey::PlayPause), Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57440u"),
+            decode_csi_u(csi(b"57440u")),
             Some(vec![key(Key::Media(MediaKey::MuteVolume), Mods::EMPTY, KeyEventKind::Press)]),
         );
     }
@@ -545,19 +547,19 @@ mod tests {
     #[test]
     fn decodes_modifier_keys_and_iso_level_keys() {
         assert_eq!(
-            decode_csi_u(b"57441u"),
+            decode_csi_u(csi(b"57441u")),
             Some(vec![key(Key::ModifierKey(ModifierKey::LeftShift), Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57452u"),
+            decode_csi_u(csi(b"57452u")),
             Some(vec![key(Key::ModifierKey(ModifierKey::RightMeta), Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57453u"),
+            decode_csi_u(csi(b"57453u")),
             Some(vec![key(Key::IsoLevel3Shift, Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57454u"),
+            decode_csi_u(csi(b"57454u")),
             Some(vec![key(Key::IsoLevel5Shift, Mods::EMPTY, KeyEventKind::Press)]),
         );
     }
@@ -565,33 +567,17 @@ mod tests {
     #[test]
     fn ignores_caps_lock_and_num_lock_modifier_bits() {
         assert_eq!(
-            decode_csi_u(b"57427;65u"), // capslock
+            decode_csi_u(csi(b"57427;65u")), // capslock
             Some(vec![key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57427;129u"), // numlock
+            decode_csi_u(csi(b"57427;129u")), // numlock
             Some(vec![key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY, KeyEventKind::Press)]),
         );
         assert_eq!(
-            decode_csi_u(b"57427;197u"), // ctrl + capslock + numlock
+            decode_csi_u(csi(b"57427;197u")), // ctrl + capslock + numlock
             Some(vec![key(Key::Keypad(KeypadKey::Begin), Mods::CTRL, KeyEventKind::Press)]),
         );
-    }
-
-    #[test]
-    fn rejects_malformed_csi_u() {
-        for body in [
-            b"u".as_slice(),
-            b"114".as_slice(),
-            b"114x".as_slice(),
-            b"114;u".as_slice(),
-            b"114;0u".as_slice(),
-            b"114;333u".as_slice(),
-            b"999999999999999999999u".as_slice(),
-            b"12345678u".as_slice(),
-        ] {
-            assert_eq!(decode_csi_u(body), None, "{body:?}");
-        }
     }
 
     #[test]

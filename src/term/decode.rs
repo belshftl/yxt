@@ -3,8 +3,10 @@
 use std::time::{Duration, Instant};
 
 use crate::model::{Key, KeyEventKind, Mods, Token};
-
-use super::{kitty, legacy, TermMode};
+use super::{
+    control::{self, ControlPrefix, CsiScan, StringControlKind, StringScan},
+    kitty, legacy, mode::TermMode
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decoded {
@@ -229,48 +231,47 @@ fn decode_esc(buf: &[u8], mode: TermMode, esc_byte_is_partial_esc: bool) -> Deco
         }
     }
 
-    match buf[1] {
-        b'[' => decode_csi(buf, mode),
-        b'O' => decode_ss3(buf, mode),
-        b']' => decode_st(buf, /* allow_bel: */ true), // apparently OSC can also end in BEL
-        b'P' | b'^' | b'_' => decode_st(buf, /* allow_bel: */ false),
-        _ => decode_alt_prefixed(buf, mode),
+    match control::classify_esc_prefixed(buf) {
+        Some(ControlPrefix::Ss2) => DecodeOne::Emit {
+            item: Decoded::Unknown(buf[..2].to_vec()),
+            consumed: 2,
+        },
+        Some(ControlPrefix::Ss3) => decode_ss3(buf, mode),
+        Some(ControlPrefix::Csi) => decode_csi(buf, mode),
+        Some(ControlPrefix::String(kind)) => decode_string_control(buf, kind),
+        Some(ControlPrefix::Esc(_)) => decode_alt_prefixed(buf, mode),
+        None => DecodeOne::Emit {
+            item: Decoded::Unknown(vec![buf[0]]),
+            consumed: 1,
+        },
     }
 }
 
 fn decode_csi(buf: &[u8], mode: TermMode) -> DecodeOne {
-    debug_assert!(buf.starts_with(b"\x1b["));
-
-    let mut idx = 2;
-    let (body, consumed) = loop {
-        if idx >= buf.len() {
-            return DecodeOne::NeedMore(NeedMore::Csi);
+    match control::scan_csi(buf, false) {
+        CsiScan::NeedMore => DecodeOne::NeedMore(NeedMore::Csi),
+        CsiScan::Complete { csi, consumed } => {
+            if let Some(tokens) = kitty::decode_csi_u(csi) {
+                return DecodeOne::EmitMany {
+                    items: tokens.into_iter().map(Decoded::Token).collect(),
+                    consumed,
+                };
+            }
+            if let Some(token) = legacy::decode_csi(csi, mode) {
+                return DecodeOne::Emit {
+                    item: Decoded::Token(token),
+                    consumed,
+                };
+            }
+            DecodeOne::Emit {
+                item: Decoded::Unknown(buf[..consumed].to_vec()),
+                consumed,
+            }
         }
-        let b = buf[idx];
-        match b {
-            0x40..=0x7e => break (&buf[2..=idx], idx + 1),
-            0x20..=0x3f => idx += 1,
-            _ => return DecodeOne::Emit { item: Decoded::Unknown(buf[..idx + 1].to_vec()), consumed: idx + 1 }
+        CsiScan::Malformed { consumed } => DecodeOne::Emit {
+            item: Decoded::Unknown(buf[..consumed].to_vec()),
+            consumed,
         }
-    };
-
-    if let Some(tokens) = kitty::decode_csi_u(body) {
-        return DecodeOne::EmitMany {
-            items: tokens.into_iter().map(Decoded::Token).collect(),
-            consumed,
-        };
-    }
-
-    if let Some(token) = legacy::decode_csi(body, mode) {
-        return DecodeOne::Emit {
-            item: Decoded::Token(token),
-            consumed,
-        };
-    }
-
-    DecodeOne::Emit {
-        item: Decoded::Unknown(buf[..consumed].to_vec()),
-        consumed,
     }
 }
 
@@ -290,28 +291,14 @@ fn decode_ss3(buf: &[u8], mode: TermMode) -> DecodeOne {
     }
 }
 
-fn decode_st(buf: &[u8], allow_bel: bool) -> DecodeOne {
-    debug_assert!(buf.starts_with(b"\x1b"));
-
-    let mut idx = 2;
-    while idx < buf.len() {
-        match buf[idx] {
-            0x07 if allow_bel => {
-                return DecodeOne::Emit {
-                    item: Decoded::Unknown(buf[..idx + 1].to_vec()),
-                    consumed: idx + 1,
-                };
-            }
-            0x1b if buf.get(idx + 1) == Some(&b'\\') => {
-                return DecodeOne::Emit {
-                    item: Decoded::Unknown(buf[..idx + 2].to_vec()),
-                    consumed: idx + 2,
-                };
-            }
-            _ => idx += 1,
-        }
+fn decode_string_control(buf: &[u8], kind: StringControlKind) -> DecodeOne {
+    match control::scan_string_control(buf, kind, false) {
+        StringScan::NeedMore => DecodeOne::NeedMore(NeedMore::StTerminatedString),
+        StringScan::Complete { consumed } | StringScan::Malformed { consumed } => DecodeOne::Emit {
+            item: Decoded::Unknown(buf[..consumed].to_vec()),
+            consumed,
+        },
     }
-    DecodeOne::NeedMore(NeedMore::StTerminatedString)
 }
 
 fn decode_alt_prefixed(buf: &[u8], mode: TermMode) -> DecodeOne {
@@ -425,7 +412,7 @@ mod tests {
     use super::*;
 
     use crate::model::{Direction, Key, KeyEventKind, Mods, Token};
-    use crate::term::{kitty, TermMode};
+    use crate::term::{kitty, mode::TermMode};
 
     fn cfg(esc_byte_is_partial_esc: bool) -> DecoderConfig {
         DecoderConfig {

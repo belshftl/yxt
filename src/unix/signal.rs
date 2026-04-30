@@ -6,13 +6,11 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use signal_hook::SigId;
-
 #[derive(Debug)]
 struct SignalEntry {
     sig: libc::c_int,
     pending: Arc<AtomicBool>,
-    id: SigId,
+    id: signal_hook::SigId,
 }
 
 #[derive(Debug)]

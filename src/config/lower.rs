@@ -3,7 +3,6 @@
 use std::collections::HashSet;
 
 use crate::model::*;
-
 use super::line::{Arg, Expr, Literal, MappingOp, Span, Stmt};
 use super::options::Options;
 
@@ -24,14 +23,12 @@ impl LiteralKind {
     }
 }
 
-use thiserror::Error;
-
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ConfigError {
     #[error("unknown directive '@{name}'")]
     UnknownDirective { name: String, span: Span },
 
-    #[error("bad arguments for directive '@{kind}'")]
+    #[error("invalid arguments for directive '@{kind}'")]
     BadDirectiveArgs { kind: &'static str, span: Span },
 
     #[error("duplicate of directive '@{kind}' is not allowed: {reason}")]
@@ -40,7 +37,7 @@ pub enum ConfigError {
     #[error("unknown command kind '{kind}'")]
     UnknownCommandKind { kind: String, span: Span },
 
-    #[error("bad arguments for command of kind '{kind}'")]
+    #[error("invalid arguments for command of kind '{kind}'")]
     BadCommandArgs { kind: &'static str, span: Span },
 
     #[error("command cannot be empty")]
@@ -49,7 +46,7 @@ pub enum ConfigError {
     #[error("unknown definition kind '{kind}'")]
     UnknownDefinition { kind: String, span: Span },
 
-    #[error("bad arguments for definition '{kind}'")]
+    #[error("invalid arguments for definition '{kind}'")]
     BadDefinitionArgs { kind: &'static str, span: Span },
 
     #[error("duplicate group '{name}'")]
@@ -67,7 +64,7 @@ pub enum ConfigError {
     #[error("unknown entity '{name}'")]
     UnknownEntity { name: String, span: Span },
 
-    #[error("bad arguments for entity '{kind}'")]
+    #[error("invalid arguments for entity '{kind}'")]
     BadEntityArgs { kind: &'static str, span: Span },
 
     #[error("unknown signal '{name}'")]
@@ -88,7 +85,7 @@ pub enum ConfigError {
     #[error("duplicate modifier '{name}'")]
     DuplicateModifier { name: String, span: Span },
 
-    #[error("bad modifier argument")]
+    #[error("invalid modifier")]
     BadModifier { span: Span },
 
     #[error("action cannot be used as mapping source")]

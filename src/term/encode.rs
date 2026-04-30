@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::model::Token;
-
-use super::{kitty, legacy, TermMode};
+use super::{kitty, legacy, mode::TermMode};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Encoder {

@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 
 use crate::model::Config;
-
 use super::line::{parse_line, Arg, FileId, LineCtx, ParseError, Span, Stmt};
 use super::lower::{ConfigBuilder, ConfigError};
 
@@ -29,19 +28,40 @@ impl SourceMap {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConfigLoadError {
+    #[error("I/O error while parsing file '{path}': {err}")]
     Io { path: PathBuf, err: std::io::Error },
+
+    #[error("@include cycle (TODO: format message)")]
     IncludeCycle { path: PathBuf, stack: Vec<PathBuf> },
+
+    #[error("unsupported version '{version}'")]
     UnsupportedVersion { version: u32, span: Span },
+
+    #[error("missing @version directive")]
     MissingVersion { path: PathBuf },
+
+    #[error("@version directive must be the first statement in the root config")]
     VersionMustBeFirst { span: Span },
+
+    #[error("duplicate @version directive in file")]
     DuplicateVersion { span: Span },
+
+    #[error("@version directive versions don't match across included files")]
     VersionMismatch { expected: u32, got: u32, span: Span },
+
+    #[error("invalid arguments for directive '@version'")]
     BadVersionArgs { span: Span },
+
+    #[error("invalid arguments for directive '@include'")]
     BadIncludeArgs { span: Span },
-    Syntax(ParseError),
-    Semantic(ConfigError),
+
+    #[error(transparent)]
+    Syntax(#[from] ParseError),
+
+    #[error(transparent)]
+    Semantic(#[from] ConfigError),
 }
 
 pub struct ConfigLoader {
@@ -103,7 +123,7 @@ impl ConfigLoader {
                 file,
                 line: line_no,
             };
-            if let Some(stmt) = parse_line(line, ctx).map_err(ConfigLoadError::Syntax)? {
+            if let Some(stmt) = parse_line(line, ctx)? {
                 self.apply_parsed_stmt(stmt, is_root, base_dir, &mut seen_non_version_stmt_here)?;
             }
         }

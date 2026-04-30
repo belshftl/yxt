@@ -3,7 +3,6 @@
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-
 use lexopt::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -13,11 +12,13 @@ pub struct Cli {
     pub no_implicit_config: bool,
     pub check_config: bool,
     pub dump_config: bool,
+    pub help: bool,
+    pub version: bool,
     pub command: Vec<OsString>,
 }
 
 impl Cli {
-    pub fn parse() -> Result<Self, CliError> {
+    pub fn parse() -> Result<Self, lexopt::Error> {
         let mut parser = lexopt::Parser::from_env();
         let mut cli = Self {
             config: None,
@@ -25,6 +26,8 @@ impl Cli {
             no_implicit_config: false,
             check_config: false,
             dump_config: false,
+            help: false,
+            version: false,
             command: Vec::new(),
         };
 
@@ -35,50 +38,19 @@ impl Cli {
                 Long("no-implicit-config") => cli.no_implicit_config = true,
                 Long("check-config") => cli.check_config = true,
                 Long("dump-config") => cli.dump_config = true,
-                Short('h') | Long("help") => {
-                    eprint!("\
-usage: {} [options] command [args ...]
-remap/inject/filter for terminal input based on config rules
-
-options:
-  -c, --config <PATH>       config file to use
-      --sock <PATH>         path of the created socket (computes a unique one by default)
-      --no-implicit-config  don't use an implicit config if found
-      --check-config        parse config and exit
-      --dump-config         parse config, print parse result, and exit
-  -h, --help                display this help and exit
-  -V, --version             output version information and exit
-", std::env::args_os().next().as_deref().map(OsStr::to_string_lossy).unwrap_or(Cow::Borrowed("yxt")));
-                    std::process::exit(2);
-                }
-                Short('V') | Long("version") => {
-                    eprintln!("yxt v0.1.0-alpha");
-                    std::process::exit(2);
-                }
+                Short('h') | Long("help") => cli.help = true,
+                Short('V') | Long("version") => cli.version = true,
                 Value(value) => {
                     cli.command.push(value);
                     cli.command.extend(parser.raw_args()?);
                     break;
                 }
-                _ => return Err(CliError::Lexopt(arg.unexpected())),
+                _ => return Err(arg.unexpected()),
             }
         }
 
-        if cli.command.is_empty() {
-            Err(CliError::MissingCommand)
-        } else {
-            Ok(cli)
-        }
+        Ok(cli)
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum CliError {
-    #[error(transparent)]
-    Lexopt(#[from] lexopt::Error),
-
-    #[error("missing command")]
-    MissingCommand,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +67,9 @@ pub struct ResolvedConfigPath<'a> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigPathError {
+    #[error("no command was provided")]
+    NoCommand,
+
     #[error("command path {0:?} has no basename")]
     CommandHasNoBasename(OsString),
 
@@ -122,6 +97,9 @@ pub fn config_path<'a>(cli: &'a Cli) -> Result<ResolvedConfigPath<'a>, ConfigPat
         });
     }
 
+    if cli.command.is_empty() {
+        return Err(ConfigPathError::NoCommand);
+    }
     let basename = command_basename(&cli.command[0])?;
     let implicit_path = implicit_config_path(basename);
 

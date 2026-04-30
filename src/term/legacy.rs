@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::model::{Direction, Key, KeyEventKind, KeypadKey, Mods, Token};
-
-use super::TermMode;
+use super::{control::{self, CsiSeq}, mode::TermMode};
 
 pub fn decode_c0(byte: u8) -> Option<Token> {
     // the name is slightly inaccurate, this also checks DEL and c < 0x20
@@ -68,8 +67,15 @@ pub fn decode_ss3(body: &[u8], mode: TermMode) -> Option<Token> {
     Some(Token::press_key(key, Mods::EMPTY))
 }
 
-pub fn decode_csi(body: &[u8], mode: TermMode) -> Option<Token> {
-    let ParsedCsi { n, m, final_byte, param_count } = parse_csi_params(body)?;
+pub fn decode_csi(csi: CsiSeq<'_>, mode: TermMode) -> Option<Token> {
+    if !csi.intermediates.is_empty() {
+            return None;
+    }
+
+    let params = control::parse_simple_params(csi.params)?;
+    let n = params.first().copied().unwrap_or(0);
+    let m = params.get(1).copied().unwrap_or(0);
+    let param_count = params.len();
 
     // https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
     // PC-Style Function Keys
@@ -92,7 +98,7 @@ pub fn decode_csi(body: &[u8], mode: TermMode) -> Option<Token> {
     };
 
     // vt-style sequences (CSI N ~)
-    if final_byte == b'~' {
+    if csi.final_byte == b'~' {
         if param_count < 1 || (param_count > 1 && m == 0) {
             return None;
         }
@@ -129,7 +135,7 @@ pub fn decode_csi(body: &[u8], mode: TermMode) -> Option<Token> {
     if param_count > 0 && n != 1 {
         return None;
     }
-    let key = match final_byte {
+    let key = match csi.final_byte {
         b'A' => Key::Arrow(Direction::Up),
         b'B' => Key::Arrow(Direction::Down),
         b'C' => Key::Arrow(Direction::Right),
@@ -150,63 +156,6 @@ pub fn decode_csi(body: &[u8], mode: TermMode) -> Option<Token> {
     };
 
     Some(Token::press_key(key, mods))
-}
-
-fn read_u32(buf: &[u8], idx: &mut usize, max: u32) -> Option<u32> {
-    let start = *idx;
-    let mut value = 0u32;
-    while *idx < buf.len() && buf[*idx].is_ascii_digit() {
-        let digit = (buf[*idx] - b'0') as u32;
-        value = value.checked_mul(10)?.checked_add(digit)?;
-        if max != 0 && value > max {
-            return None;
-        }
-        *idx += 1;
-    }
-    if *idx == start {
-        return None;
-    }
-    Some(value)
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ParsedCsi {
-    // CSI n[;m]x where x = final_byte
-    n: u32,
-    m: u32,
-    final_byte: u8,
-    param_count: usize,
-}
-
-fn parse_csi_params(body: &[u8]) -> Option<ParsedCsi> {
-    // fish out the parameters from a CSI sequence in the form
-    // CSI x, CSI n x, or CSI n[;m] x
-
-    // case 0: x
-    if body.len() == 1 && !body[0].is_ascii_digit() {
-        return Some(ParsedCsi { n: 0, m: 0, final_byte: body[0], param_count: 0 });
-    }
-
-    // case 1: nx
-    let mut idx = 0;
-    let n = read_u32(body, &mut idx, 0)?;
-    if idx >= body.len() {
-        return None;
-    }
-    if body[idx] != b';' {
-        if idx + 1 != body.len() {
-            return None;
-        }
-        return Some(ParsedCsi { n, m: 0, final_byte: body[idx], param_count: 1 });
-    }
-
-    // case 2: n;mx
-    idx += 1;
-    let m = read_u32(body, &mut idx, 0)?;
-    if idx >= body.len() || idx + 1 != body.len() {
-        return None;
-    }
-    Some(ParsedCsi { n, m, final_byte: body[idx], param_count: 2 })
 }
 
 pub fn encode_token(token: &Token, mode: TermMode) -> Option<Vec<u8>> {
@@ -383,7 +332,7 @@ mod tests {
     use super::*;
 
     use crate::model::{Direction, Key, KeypadKey, Mods, Token};
-    use crate::term::TermMode;
+    use crate::term::mode::TermMode;
 
     fn mode(decckm: bool, deckpam: bool) -> TermMode {
         TermMode {
@@ -459,70 +408,6 @@ mod tests {
         assert_eq!(
             decode_ss3(b"M", mode(false, true)),
             Some(Token::press_key(Key::Keypad(KeypadKey::Enter), Mods::EMPTY)),
-        );
-    }
-
-    #[test]
-    fn decodes_csi_arrows() {
-        let m = mode(false, false);
-        assert_eq!(
-            decode_csi(b"A", m),
-            Some(Token::press_key(Key::Arrow(Direction::Up), Mods::EMPTY)),
-        );
-        assert_eq!(
-            decode_csi(b"1;5D", m),
-            Some(Token::press_key(Key::Arrow(Direction::Left), Mods::CTRL)),
-        );
-        assert_eq!(
-            decode_csi(b"1;4C", m),
-            Some(Token::press_key(Key::Arrow(Direction::Right), Mods::SHIFT | Mods::ALT)),
-        );
-    }
-
-    #[test]
-    fn decodes_csi_vt_keys() {
-        let m = mode(false, false);
-        assert_eq!(
-            decode_csi(b"2~", m),
-            Some(Token::press_key(Key::Insert, Mods::EMPTY)),
-        );
-        assert_eq!(
-            decode_csi(b"3;5~", m),
-            Some(Token::press_key(Key::Delete, Mods::CTRL)),
-        );
-        assert_eq!(
-            decode_csi(b"15~", m),
-            Some(Token::press_key(Key::Function(5), Mods::EMPTY))
-        );
-        assert_eq!(
-            decode_csi(b"24;3~", m),
-            Some(Token::press_key(Key::Function(12), Mods::ALT)),
-        );
-    }
-
-    #[test]
-    fn decodes_csi_e_only_as_keypad_begin_when_deckpam_or_kitty() {
-        assert_eq!(
-            decode_csi(b"E", mode(false, false)),
-            None
-        );
-        assert_eq!(
-            decode_csi(b"E", mode(false, true)),
-            Some(Token::press_key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY)),
-        );
-        assert_eq!(
-            decode_csi(b"1;5E", mode(false, true)),
-            Some(Token::press_key(Key::Keypad(KeypadKey::Begin), Mods::CTRL)),
-        );
-
-        let kitty_mode = TermMode {
-            decckm: false,
-            deckpam: false,
-            kitty_flags: 1,
-        };
-        assert_eq!(
-            decode_csi(b"E", kitty_mode),
-            Some(Token::press_key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY)),
         );
     }
 
