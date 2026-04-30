@@ -52,15 +52,15 @@ impl SignalRegistry {
 
         let pending = Arc::new(AtomicBool::new(false));
         let handler_pending = Arc::clone(&pending);
-        let write_fd = self.write.as_raw_fd();
+        let write_raw_fd = self.write.as_raw_fd();
 
-        // SAFETY: register() closure must be async-signal-safe; `write_fd` must be valid and
+        // SAFETY: register() closure must be async-signal-safe; `write_raw_fd` must be valid and
         // non-blocking and stay as such until the handler is unregistered
         let id = unsafe {
             signal_hook::low_level::register(sig, move || {
                 handler_pending.store(true, Ordering::Relaxed);
                 let byte = 0u8;
-                _ = libc::write(write_fd, &byte as *const _ as *const _, core::mem::size_of_val(&byte));
+                _ = libc::write(write_raw_fd, &byte as *const _ as *const _, core::mem::size_of_val(&byte));
             })
         }.map_err(SignalError::Io)?;
 

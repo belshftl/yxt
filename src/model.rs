@@ -4,6 +4,27 @@ use std::{collections::HashMap};
 
 use crate::config::{line::Span, options::Options};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Protocol {
+    Legacy = 0,
+    Kitty = 1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProtocolPolicy {
+    pub exact: Option<Protocol>,
+    pub minimum: Protocol,
+}
+
+impl Default for ProtocolPolicy {
+    fn default() -> Self {
+        Self {
+            exact: None,
+            minimum: Protocol::Legacy,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Key {
     Esc,
@@ -208,6 +229,16 @@ impl GroupTable {
 pub struct Signal(pub libc::c_int);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CommandSpec {
+    Exec {
+        argv: Vec<String>,
+    },
+    Shell {
+        command: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Event {
     Signal(Signal),
     Sockdata(Vec<u8>),
@@ -260,7 +291,7 @@ impl Token {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
-    Shell(String),
+    Command(CommandSpec),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -286,12 +317,13 @@ pub struct Mapping {
 
 #[derive(Debug, Clone)]
 pub struct Service {
-    pub name: Option<String>,
-    // TODO: the rest of the struct
+    pub name: String,
+    pub command: CommandSpec,
 }
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub protocol: ProtocolPolicy,
     pub options: Options,
     pub groups: GroupTable,
     pub mappings: Vec<Mapping>,

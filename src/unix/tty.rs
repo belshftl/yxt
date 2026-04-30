@@ -17,7 +17,7 @@ pub struct RawTerminal {
 }
 
 impl RawTerminal {
-    pub fn enter(fd: impl AsFd) -> std::io::Result<Self> {
+    pub fn enter<F: AsFd + ?Sized>(fd: &F) -> std::io::Result<Self> {
         let fd = dup_fd(fd)?;
         let raw_fd = fd.as_raw_fd();
 
@@ -72,7 +72,7 @@ fn tcsetattr_raw(fd: RawFd, termios: &termios) -> std::io::Result<()> {
     }
 }
 
-pub fn dup_fd(fd: impl AsFd) -> std::io::Result<OwnedFd> {
+pub fn dup_fd<F: AsFd + ?Sized>(fd: &F) -> std::io::Result<OwnedFd> {
     let raw = unsafe { libc::dup(fd.as_fd().as_raw_fd()) };
     if raw < 0 {
         Err(Error::last_os_error())
@@ -82,7 +82,7 @@ pub fn dup_fd(fd: impl AsFd) -> std::io::Result<OwnedFd> {
     }
 }
 
-pub fn get_winsize(fd: impl AsFd) -> std::io::Result<winsize> {
+pub fn get_winsize<F: AsFd + ?Sized>(fd: &F) -> std::io::Result<winsize> {
     let mut ws = MaybeUninit::<winsize>::uninit();
     if unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), libc::TIOCGWINSZ, ws.as_mut_ptr()) } < 0 {
         Err(Error::last_os_error())
@@ -92,7 +92,7 @@ pub fn get_winsize(fd: impl AsFd) -> std::io::Result<winsize> {
     }
 }
 
-pub fn set_winsize(fd: impl AsFd, ws: &winsize) -> std::io::Result<()> {
+pub fn set_winsize<F: AsFd + ?Sized>(fd: &F, ws: &winsize) -> std::io::Result<()> {
     if unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), libc::TIOCSWINSZ, ws) } < 0 {
         Err(Error::last_os_error())
     } else {

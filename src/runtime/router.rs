@@ -203,9 +203,7 @@ mod tests {
     use std::fs;
 
     use crate::config::loader::ConfigLoader;
-    use crate::model::{
-        Action, Event, Key, Mods, Source, Token,
-    };
+    use crate::model::{Action, CommandSpec, Event, Key, Mods, Source, Token};
 
     fn cfg(src: &str) -> crate::model::Config {
         let dir = tempfile::tempdir().unwrap();
@@ -265,7 +263,9 @@ tok_key(f1) => act_shell("echo hi")
         assert!(result.matched);
         assert_eq!(
             result.effects,
-            vec![RouteEffect::Action(Action::Shell("echo hi".to_owned()))],
+            vec![RouteEffect::Action(Action::Command(CommandSpec::Shell {
+                command: "echo hi".to_owned()
+            }))],
         );
     }
 
@@ -273,13 +273,15 @@ tok_key(f1) => act_shell("echo hi")
     fn event_source_mapping() {
         let router = router(r#"
 @version 1
-evt_sockdata("reload") => act_shell("reload")
+evt_sockdata_utf8("reload") => act_shell("reload")
 "#);
         let result = router.fire(&sockdata_source(b"reload")).unwrap();
         assert!(result.matched);
         assert_eq!(
             result.effects,
-            vec![RouteEffect::Action(Action::Shell("reload".to_owned()))],
+            vec![RouteEffect::Action(Action::Command(CommandSpec::Shell {
+                command: "reload".to_owned()
+            }))],
         );
         assert!(!router.fire(&sockdata_source(b"reload\n")).unwrap().matched);
     }
@@ -330,7 +332,9 @@ tok_key(f1) => tok_utf8("d")
             vec![
                 RouteEffect::Token(Token::press_utf8('a', Mods::EMPTY)),
                 RouteEffect::Token(Token::press_utf8('b', Mods::EMPTY)),
-                RouteEffect::Action(Action::Shell("c".to_owned())),
+                RouteEffect::Action(Action::Command(CommandSpec::Shell {
+                    command: "c".to_owned()
+                })),
                 RouteEffect::Token(Token::press_utf8('d', Mods::EMPTY)),
             ],
         );
@@ -352,7 +356,9 @@ group("reload") => act_shell("reload")
             result.effects,
             vec![
                 RouteEffect::Token(Token::press_utf8('r', Mods::EMPTY)),
-                RouteEffect::Action(Action::Shell("reload".to_owned())),
+                RouteEffect::Action(Action::Command(CommandSpec::Shell {
+                    command: "reload".to_owned()
+                })),
             ],
         );
     }
@@ -406,7 +412,9 @@ tok_utf8("x") => act_shell("should run only for external x")
         assert!(result.matched);
         assert_eq!(
             result.effects,
-            vec![RouteEffect::Action(Action::Shell("should run only for external x".to_owned()))],
+            vec![RouteEffect::Action(Action::Command(CommandSpec::Shell {
+                command: "should run only for external x".to_owned()
+            }))],
         );
     }
 
@@ -483,7 +491,9 @@ tok_utf8("x") => act_shell("x")
             assert!(result.matched);
             assert_eq!(
                 result.effects,
-                vec![RouteEffect::Action(Action::Shell("x".to_owned()))],
+                vec![RouteEffect::Action(Action::Command(CommandSpec::Shell {
+                    command: "x".to_owned()
+                }))],
             );
         }
 

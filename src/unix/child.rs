@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use std::ffi::OsString;
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -118,9 +118,9 @@ pub fn spawn_pty_attached(spec: &CommandSpec, opts: &PtyChildSpawnOptions) -> Re
     }
 
     let slave_raw_fd = pair.slave.as_raw_fd();
-    let stdin = dup_fd(pair.slave.as_fd())?;
-    let stdout = dup_fd(pair.slave.as_fd())?;
-    let stderr = dup_fd(pair.slave.as_fd())?;
+    let stdin = dup_fd(&pair.slave)?;
+    let stdout = dup_fd(&pair.slave)?;
+    let stderr = dup_fd(&pair.slave)?;
     let mut cmd = make_command(spec)?;
     apply(&mut cmd, &opts.env, opts.cwd.as_ref());
     cmd.stdin(stdin);

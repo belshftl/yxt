@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-use crate::model::{
-    Action, DefineGroupError, Config, Direction, Event, GroupId, GroupTable, Key, KeypadKey,
-    Mapping, MediaKey, ModifierKey, Mods, Service, Signal, Source, Target, Token,
-};
+use std::collections::HashSet;
+
+use crate::model::*;
 
 use super::line::{Arg, Expr, Literal, MappingOp, Span, Stmt};
 use super::options::Options;
@@ -32,14 +31,26 @@ pub enum ConfigError {
     #[error("unknown directive '@{name}'")]
     UnknownDirective { name: String, span: Span },
 
-    #[error("bad arguments for directive '@{name}'")]
-    BadDirectiveArgs { name: String, span: Span },
+    #[error("bad arguments for directive '@{kind}'")]
+    BadDirectiveArgs { kind: &'static str, span: Span },
+
+    #[error("duplicate of directive '@{kind}' is not allowed: {reason}")]
+    DuplicateDirective { kind: &'static str, reason: &'static str, span: Span },
+
+    #[error("unknown command kind '{kind}'")]
+    UnknownCommandKind { kind: String, span: Span },
+
+    #[error("bad arguments for command of kind '{kind}'")]
+    BadCommandArgs { kind: &'static str, span: Span },
+
+    #[error("command cannot be empty")]
+    EmptyCommand { span: Span },
 
     #[error("unknown definition kind '{kind}'")]
     UnknownDefinition { kind: String, span: Span },
 
     #[error("bad arguments for definition '{kind}'")]
-    BadDefinitionArgs { kind: String, span: Span },
+    BadDefinitionArgs { kind: &'static str, span: Span },
 
     #[error("duplicate group '{name}'")]
     DuplicateGroup { name: String, span: Span },
@@ -53,11 +64,11 @@ pub enum ConfigError {
     #[error("wrong literal type: expected '{expected:?}', got '{got:?}'")]
     WrongLiteralType { expected: LiteralKind, got: LiteralKind, span: Span },
 
-    #[error("unknown entity constructor '{name}'")]
+    #[error("unknown entity '{name}'")]
     UnknownEntity { name: String, span: Span },
 
-    #[error("bad arguments for entity '{name}'")]
-    BadEntityArgs { name: String, span: Span },
+    #[error("bad arguments for entity '{kind}'")]
+    BadEntityArgs { kind: &'static str, span: Span },
 
     #[error("unknown signal '{name}'")]
     UnknownSignal { name: String, span: Span },
@@ -92,19 +103,23 @@ pub enum ConfigError {
 
 #[derive(Debug)]
 pub struct ConfigBuilder {
+    protocol: Option<ProtocolPolicy>,
     options: Options,
     groups: GroupTable,
     mappings: Vec<Mapping>,
     services: Vec<Service>,
+    sv_names: HashSet<String>,
 }
 
 impl Default for ConfigBuilder {
     fn default() -> Self {
         Self {
+            protocol: None,
             options: Options::default(),
             groups: GroupTable::default(),
             mappings: Vec::new(),
             services: Vec::new(),
+            sv_names: HashSet::new(),
         }
     }
 }
@@ -121,6 +136,7 @@ impl ConfigBuilder {
 
     pub fn finish(self) -> Result<Config, ConfigError> {
         Ok(Config {
+            protocol: self.protocol.unwrap_or_default(),
             options: self.options,
             groups: self.groups,
             mappings: self.mappings,
@@ -130,16 +146,43 @@ impl ConfigBuilder {
 
     fn apply_directive(&mut self, name: String, args: Vec<Arg>, span: Span) -> Result<(), ConfigError> {
         match name.as_str() {
-            "service" => { _ = std::convert::identity(args); todo!() }
+            "protocol" => todo!(),
+            "service" => self.apply_service(args, span),
             _ => Err(ConfigError::UnknownDirective { name, span }),
         }
+    }
+
+    fn apply_service(&mut self, args: Vec<Arg>, span: Span) -> Result<(), ConfigError> {
+        let mut args = args.into_iter();
+        let Some(Arg::String(name)) = args.next() else {
+            return Err(ConfigError::BadDirectiveArgs { kind: "service", span });
+        };
+        if name.is_empty() {
+            return Err(ConfigError::BadDirectiveArgs { kind: "service", span });
+        }
+        let Some(Arg::Call(command)) = args.next() else {
+            return Err(ConfigError::BadDirectiveArgs { kind: "service", span });
+        };
+        if args.next().is_some() {
+            return Err(ConfigError::BadDirectiveArgs { kind: "service", span });
+        }
+        if !self.sv_names.insert(name.clone()) {
+            return Err(ConfigError::DuplicateDirective {
+                kind: "service",
+                reason: "duplicate service name; services must have unique names",
+                span,
+            });
+        }
+        let command = lower_command_spec(command)?;
+        self.services.push(Service { name, command });
+        Ok(())
     }
 
     fn apply_definition(&mut self, kind: String, args: Vec<Arg>, span: Span) -> Result<(), ConfigError> {
         match kind.as_str() {
             "group" => {
-                let name = expect_one_string(args, span).map_err(|_| ConfigError::BadDefinitionArgs {
-                    kind, span
+                let name = expect_one_string(args).map_err(|_| ConfigError::BadDefinitionArgs {
+                    kind: "group", span
                 })?;
                 self.groups.define(name).map_err(|e| match e {
                     DefineGroupError::Duplicate(name) => ConfigError::DuplicateGroup { name, span }
@@ -190,20 +233,21 @@ impl ConfigBuilder {
     fn lower_entity(&self, expr: Expr) -> Result<Entity, ConfigError> {
         match expr {
             Expr::Call { name, args, span } => match name.as_str() {
-                "evt_signal" => lower_evt_signal(args, span, name),
-                "evt_sockdata" => lower_evt_sockdata(args, span, name),
-                "tok_utf8" => lower_tok_utf8(args, span, name),
-                "tok_key" => lower_tok_key(args, span, name),
+                "evt_signal" => lower_evt_signal(args, span),
+                "evt_sockdata_utf8" => lower_evt_sockdata_utf8(args, span),
+                "tok_utf8" => lower_tok_utf8(args, span),
+                "tok_key" => lower_tok_key(args, span),
                 "group" => {
-                    let group_name = expect_one_string(args, span).map_err(|_| ConfigError::BadEntityArgs {
-                        name, span
+                    let group_name = expect_one_string(args).map_err(|_| ConfigError::BadEntityArgs {
+                        kind: "group", span
                     })?;
                     let id = self.groups.lookup(&group_name).ok_or_else(|| {
                         ConfigError::UnknownGroup { name: group_name, span }
                     })?;
                     Ok(Entity::Group(id))
                 }
-                "act_shell" => lower_act_shell(args, span, name),
+                "act_exec" => Ok(Entity::Action(Action::Command(lower_exec_command(args, span)?))),
+                "act_shell" => Ok(Entity::Action(Action::Command(lower_shell_command(args, span)?))),
                 _ => Err(ConfigError::UnknownEntity { name, span }),
             },
         }
@@ -218,17 +262,17 @@ enum Entity {
     Action(Action),
 }
 
-fn lower_evt_signal(args: Vec<Arg>, span: Span, ctor: String) -> Result<Entity, ConfigError> {
-    let name = expect_one_string(args, span).map_err(|_| ConfigError::BadEntityArgs {
-        name: ctor, span,
+fn lower_evt_signal(args: Vec<Arg>, span: Span) -> Result<Entity, ConfigError> {
+    let name = expect_one_string(args).map_err(|_| ConfigError::BadEntityArgs {
+        kind: "evt_signal", span,
     })?;
     let signal = lower_signal_name(&name, span)?;
     Ok(Entity::Event(Event::Signal(signal)))
 }
 
-fn lower_evt_sockdata(args: Vec<Arg>, span: Span, ctor: String) -> Result<Entity, ConfigError> {
-    let s = expect_one_string(args, span).map_err(|_| ConfigError::BadEntityArgs {
-        name: ctor, span,
+fn lower_evt_sockdata_utf8(args: Vec<Arg>, span: Span) -> Result<Entity, ConfigError> {
+    let s = expect_one_string(args).map_err(|_| ConfigError::BadEntityArgs {
+        kind: "evt_sockdata_utf8", span,
     })?;
     Ok(Entity::Event(Event::Sockdata(s.as_bytes().to_vec())))
 }
@@ -261,26 +305,26 @@ fn lower_signal_name(name: &str, span: Span) -> Result<Signal, ConfigError> {
     }
 }
 
-fn lower_tok_utf8(args: Vec<Arg>, span: Span, ctor: String) -> Result<Entity, ConfigError> {
+fn lower_tok_utf8(args: Vec<Arg>, span: Span) -> Result<Entity, ConfigError> {
     let mut args = args.into_iter();
     let Some(Arg::String(v)) = args.next() else {
-        return Err(ConfigError::BadEntityArgs { name: ctor, span });
+        return Err(ConfigError::BadEntityArgs { kind: "tok_utf8", span });
     };
     let mut chars = v.chars();
     let Some(ch) = chars.next() else {
-        return Err(ConfigError::BadEntityArgs { name: ctor, span });
+        return Err(ConfigError::BadEntityArgs { kind: "tok_utf8", span });
     };
     if chars.next().is_some() {
-        return Err(ConfigError::BadEntityArgs { name: ctor, span });
+        return Err(ConfigError::BadEntityArgs { kind: "tok_utf8", span });
     }
     let mods = lower_mods(args, span)?;
     Ok(Entity::Token(Token::press_utf8(ch, mods)))
 }
 
-fn lower_tok_key(args: Vec<Arg>, span: Span, ctor: String) -> Result<Entity, ConfigError> {
+fn lower_tok_key(args: Vec<Arg>, span: Span) -> Result<Entity, ConfigError> {
     let mut args = args.into_iter();
     let Some(Arg::Ident(v)) = args.next() else {
-        return Err(ConfigError::BadEntityArgs { name: ctor, span });
+        return Err(ConfigError::BadEntityArgs { kind: "tok_key", span });
     };
     let key = lower_key_name(&v, span)?;
     let mods = lower_mods(args, span)?;
@@ -415,20 +459,49 @@ fn parse_numbered_name(name: &str, prefix: &str) -> Option<u8> {
     rest.parse::<u8>().ok()
 }
 
-fn lower_act_shell(args: Vec<Arg>, span: Span, ctor: String) -> Result<Entity, ConfigError> {
-    let command = expect_one_string(args, span).map_err(|_| ConfigError::BadEntityArgs {
-        name: ctor, span,
-    })?;
-    Ok(Entity::Action(Action::Shell(command)))
+fn lower_command_spec(expr: Expr) -> Result<CommandSpec, ConfigError> {
+    match expr {
+        Expr::Call { name, args, span } => match name.as_str() {
+            "exec" => lower_exec_command(args, span),
+            "sh" => lower_shell_command(args, span),
+            _ => Err(ConfigError::UnknownCommandKind { kind: name, span }),
+        },
+    }
 }
 
-fn expect_one_string(args: Vec<Arg>, span: Span) -> Result<String, Span> {
+fn lower_exec_command(args: Vec<Arg>, span: Span) -> Result<CommandSpec, ConfigError> {
+    let mut argv = Vec::new();
+    for arg in args {
+        let Arg::String(s) = arg else {
+            return Err(ConfigError::BadCommandArgs { kind: "exec", span });
+        };
+        argv.push(s);
+    }
+    if argv.is_empty() || argv[0].is_empty() {
+        Err(ConfigError::EmptyCommand { span })
+    } else {
+        Ok(CommandSpec::Exec { argv })
+    }
+}
+
+fn lower_shell_command(args: Vec<Arg>, span: Span) -> Result<CommandSpec, ConfigError> {
+    let command = expect_one_string(args).map_err(|_| ConfigError::BadCommandArgs {
+        kind: "sh", span,
+    })?;
+    if command.is_empty() {
+        Err(ConfigError::EmptyCommand { span })
+    } else {
+        Ok(CommandSpec::Shell { command })
+    }
+}
+
+fn expect_one_string(args: Vec<Arg>) -> Result<String, ()> {
     let mut args = args.into_iter();
     let Some(Arg::String(value)) = args.next() else {
-        return Err(span);
+        return Err(());
     };
     if args.next().is_some() {
-        return Err(span);
+        return Err(());
     }
     Ok(value)
 }

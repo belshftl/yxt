@@ -212,9 +212,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use crate::model::{
-        Action, Event, Key, Mods, Source, Target, Token,
-    };
+    use crate::model::{Action, CommandSpec, Event, Key, Mods, Source, Target, Token};
 
     fn write_file(dir: &TempDir, rel: &str, text: &str) -> std::path::PathBuf {
         let path = dir.path().join(rel);
@@ -375,7 +373,9 @@ group("reload") => act_shell("reload")
         assert!(matches!(cfg.mappings[0].to, Target::Group(_)));
         assert_eq!(
             cfg.mappings[1].to,
-            Target::Action(Action::Shell("reload".to_owned())),
+            Target::Action(Action::Command(CommandSpec::Shell {
+                command: "reload".to_owned()
+            })),
         );
     }
 
@@ -691,7 +691,7 @@ tok_key(f1) => tok_utf8("x")
 define group "reload"
 
 tok_key(f5) => group("reload")
-evt_sockdata("reload") => group("reload")
+evt_sockdata_utf8("reload") => group("reload")
 group("reload") => tok_utf8("r", ctrl)
 group("reload") => act_shell("reload")
 "#);
