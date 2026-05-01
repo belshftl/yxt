@@ -9,7 +9,9 @@ mod unix;
 use std::borrow::Cow;
 use std::ffi::OsStr;
 
-use crate::runtime::cli::{config_path, Cli};
+use config::loader::ConfigLoader;
+use runtime::cli::{config_path, Cli};
+use unix::pledge::try_pledge;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -52,6 +54,8 @@ fn main() {
 }
 
 fn run(argv0: &str) -> Result<(), AppError> {
+    try_pledge("stdio rpath wpath cpath unix tty proc exec", None)?;
+
     let cli = Cli::parse()?;
     if cli.help {
         eprint!("\
@@ -81,7 +85,17 @@ try '--help' for more info
         return Ok(());
     }
 
-    let cfg = config_path(&cli)?;
-    println!("{}", cfg.path.as_ref().display());
-    Ok(())
+    let config_path = config_path(&cli)?;
+    let config = ConfigLoader::new().parse_file(config_path.path.as_ref())?;
+
+    if cli.check_config {
+        return Ok(());
+    }
+
+    if cli.dump_config {
+        println!("{config:#?}");
+        return Ok(());
+    }
+
+    todo!()
 }

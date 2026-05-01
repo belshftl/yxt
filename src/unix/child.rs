@@ -9,13 +9,26 @@ use std::process::{Child, Command, Stdio};
 use super::tty::{dup_fd, open_pty_pair, set_winsize, switch_to_ctty, PtyOpenError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CommandSpec {
+pub enum OsCommandSpec {
     Exec {
         argv: Vec<OsString>,
     },
     Shell {
         command: OsString,
     },
+}
+
+impl OsCommandSpec {
+    pub fn from_model(command: &crate::model::CommandSpec) -> Self {
+        match command {
+            crate::model::CommandSpec::Exec { argv } => Self::Exec {
+                argv: argv.iter().map(OsString::from).collect(),
+            },
+            crate::model::CommandSpec::Shell { command } => Self::Shell {
+                command: OsString::from(command),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +89,7 @@ impl Default for PtyChildSpawnOptions {
     }
 }
 
+#[derive(Debug)]
 pub struct PtyChild {
     pub master: OwnedFd,
     pub child: Child,
@@ -92,9 +106,6 @@ pub enum ChildError {
     #[error("empty shell command")]
     EmptyShellCommand,
 
-    #[error("empty service name")]
-    EmptyServiceName,
-
     #[error("pty open failed: {0}")]
     PtyOpen(#[from] PtyOpenError),
 
@@ -102,7 +113,7 @@ pub enum ChildError {
     Io(#[from] std::io::Error),
 }
 
-pub fn spawn(spec: &CommandSpec, opts: &ChildSpawnOptions) -> Result<Child, ChildError> {
+pub fn spawn(spec: &OsCommandSpec, opts: &ChildSpawnOptions) -> Result<Child, ChildError> {
     let mut cmd = make_command(spec)?;
     apply(&mut cmd, &opts.env, opts.cwd.as_ref());
     cmd.stdin(stdio(&opts.stdin));
@@ -111,7 +122,7 @@ pub fn spawn(spec: &CommandSpec, opts: &ChildSpawnOptions) -> Result<Child, Chil
     Ok(cmd.spawn()?)
 }
 
-pub fn spawn_pty_attached(spec: &CommandSpec, opts: &PtyChildSpawnOptions) -> Result<PtyChild, ChildError> {
+pub fn spawn_pty_attached(spec: &OsCommandSpec, opts: &PtyChildSpawnOptions) -> Result<PtyChild, ChildError> {
     let pair = open_pty_pair()?;
     if let Some(ws) = opts.window_size {
         set_winsize(&pair.slave, &ws)?;
@@ -136,9 +147,9 @@ pub fn spawn_pty_attached(spec: &CommandSpec, opts: &PtyChildSpawnOptions) -> Re
     Ok(PtyChild { master: pair.master, child })
 }
 
-fn make_command(spec: &CommandSpec) -> Result<Command, ChildError> {
+fn make_command(spec: &OsCommandSpec) -> Result<Command, ChildError> {
     match spec {
-        CommandSpec::Exec { argv } => {
+        OsCommandSpec::Exec { argv } => {
             let Some(program) = argv.first() else {
                 return Err(ChildError::EmptyArgv);
             };
@@ -149,7 +160,7 @@ fn make_command(spec: &CommandSpec) -> Result<Command, ChildError> {
             cmd.args(&argv[1..]);
             Ok(cmd)
         }
-        CommandSpec::Shell { command } => {
+        OsCommandSpec::Shell { command } => {
             if command.is_empty() {
                 return Err(ChildError::EmptyShellCommand);
             }
