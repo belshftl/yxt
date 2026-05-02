@@ -185,7 +185,7 @@ impl ServiceManager {
         }
     }
 
-    pub fn start(services: Vec<Service>, spawn_options: ChildSpawnOptions, shutdown_grace: Duration) -> Result<Self, ServiceError> {
+    pub fn start(services: &Vec<Service>, spawn_options: ChildSpawnOptions, shutdown_grace: Duration) -> Result<Self, ServiceError> {
         let mut manager = Self {
             services: Vec::new(),
             shutdown_grace,

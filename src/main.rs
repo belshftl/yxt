@@ -7,11 +7,20 @@ mod term;
 mod unix;
 
 use std::borrow::Cow;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
+use std::time::Duration;
 
 use config::loader::ConfigLoader;
+use runtime::children::ServiceManager;
 use runtime::cli::{config_path, Cli};
+use term::mode::TerminalModeTracker;
+use unix::child::{
+    spawn_pty_attached, ChildEnv, ChildSpawnOptions, ChildStdio, OsCommandSpec, PtyChildSpawnOptions,
+};
 use unix::pledge::try_pledge;
+use unix::signal::SignalRegistry;
+use unix::sock::{default_sock_path, ControlSock};
+use unix::tty::{get_winsize, RawTerminal};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -28,7 +37,10 @@ pub enum AppError {
     ConfigPath(#[from] crate::runtime::cli::ConfigPathError),
 
     #[error(transparent)]
-    ConfigLoadError(#[from] crate::config::loader::ConfigLoadError),
+    ConfigLoad(#[from] crate::config::loader::ConfigLoadError),
+
+    #[error(transparent)]
+    ControlSock(#[from] crate::unix::sock::ControlSockError),
 
     #[error(transparent)]
     Child(#[from] crate::unix::child::ChildError),
@@ -96,6 +108,47 @@ try '--help' for more info
         println!("{config:#?}");
         return Ok(());
     }
+
+    let sock_path = default_sock_path("yxt")?;
+    let sock = ControlSock::bind(&sock_path, 8192)?;
+
+    try_pledge("stdio rpath tty proc exec", None)?;
+
+    let env = ChildEnv {
+        vars: vec![
+            (OsString::from("YXT_PID"), OsString::from(std::process::id().to_string())),
+            (OsString::from("YXT_SOCK"), sock_path.as_os_str().to_owned()),
+        ],
+    };
+    let child_opts = ChildSpawnOptions {
+        env: env.clone(),
+        cwd: None,
+        stdin: ChildStdio::Null,
+        stdout: ChildStdio::Null,
+        stderr: ChildStdio::Null,
+    };
+    let services = ServiceManager::start(&config.services, child_opts.clone(), Duration::from_millis(1000));
+
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let winsize = get_winsize(&stdin).ok();
+
+    let child_spec = OsCommandSpec::Exec { argv: cli.command };
+    let child = spawn_pty_attached(&child_spec, &PtyChildSpawnOptions {
+        env: env.clone(),
+        cwd: None,
+        window_size: winsize,
+    })?;
+
+    let _term = RawTerminal::enter(&stdin)?;
+
+    let mut signals = SignalRegistry::new()?;
+    signals.register(libc::SIGINT)?;
+    signals.register(libc::SIGTERM)?;
+    signals.register(libc::SIGWINCH)?;
+    // TODO: register signals from config for actions
+
+    let tracker = TerminalModeTracker::new();
 
     todo!()
 }

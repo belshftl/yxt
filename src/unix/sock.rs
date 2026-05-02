@@ -48,7 +48,7 @@ pub struct ControlSock {
 }
 
 impl ControlSock {
-    pub fn bind(path: PathBuf, max_datagram_size: usize) -> Result<Self, ControlSockError> {
+    pub fn bind(path: &Path, max_datagram_size: usize) -> Result<Self, ControlSockError> {
         let len = path.as_os_str().as_bytes().len();
         if len > MAX_UNIX_SOCKET_PATH_BYTES {
             return Err(ControlSockError::PathTooLong(path.to_owned()));
@@ -65,11 +65,11 @@ impl ControlSock {
         }
 
         let socket = UnixDatagram::bind(&path).map_err(|source| {
-            ControlSockError::Bind { path: path.clone(), source }
+            ControlSockError::Bind { path: path.to_owned(), source }
         })?;
         socket.set_nonblocking(true).map_err(ControlSockError::Configure)?;
 
-        Ok(Self { path, socket, max_datagram_size })
+        Ok(Self { path: path.to_owned(), socket, max_datagram_size })
     }
 
     pub fn path(&self) -> &Path {
