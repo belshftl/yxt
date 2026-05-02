@@ -290,6 +290,71 @@ impl Token {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum InheritToken {
+    Utf8 {
+        ch: char,
+    },
+    Key {
+        key: Key,
+    },
+}
+
+impl InheritToken {
+    pub fn to_token(&self, payload: TokenPayload) -> Token {
+        match *self {
+            Self::Utf8 { ch } => Token::Utf8 {
+                ch,
+                mods: payload.mods,
+                kind: payload.kind,
+            },
+            Self::Key { key } => Token::Key {
+                key,
+                mods: payload.mods,
+                kind: payload.kind,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TokenPayload {
+    pub mods: Mods,
+    pub kind: KeyEventKind,
+}
+
+impl TokenPayload {
+    pub fn from_token(token: &Token) -> Self {
+        match *token {
+            Token::Utf8 { mods, kind, .. } | Token::Key { mods, kind, .. } => {
+                Self { mods, kind }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Payload {
+    Token(TokenPayload),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadKind {
+    Token,
+}
+
+impl Payload {
+    pub fn token(self) -> Option<TokenPayload> {
+        match self {
+            Self::Token(payload) => Some(payload),
+        }
+    }
+
+    pub fn token_kind(self) -> Option<KeyEventKind> {
+        self.token().map(|p| p.kind)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
     Command(CommandSpec),
 }
@@ -301,21 +366,40 @@ pub enum Source {
     Group(GroupId),
 }
 
+impl Source {
+    pub fn provides_payload(&self) -> Option<PayloadKind> {
+        match *self {
+            Source::Token(_) => Some(PayloadKind::Token),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Target {
     Token(Token),
+    InheritToken(InheritToken),
     Group(GroupId),
     Action(Action),
 }
 
-#[derive(Debug, Clone)]
+impl Target {
+    pub fn requires_payload(&self) -> Option<PayloadKind> {
+        match *self {
+            Target::InheritToken(_) => Some(PayloadKind::Token),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mapping {
     pub from: Source,
     pub to: Target,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
     pub name: String,
     pub command: CommandSpec,

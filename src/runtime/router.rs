@@ -2,7 +2,10 @@
 
 use std::collections::HashMap;
 
-use crate::model::{Action, Config, Event, GroupId, Key, KeyEventKind, Mods, Source, Target, Token};
+use crate::model::{
+    Action, Config, Event, GroupId, Key, KeyEventKind, Mods, Payload, PayloadKind, Source,
+    Target, Token, TokenPayload,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteEffect {
@@ -18,11 +21,11 @@ pub struct RouteResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RouteError {
-    #[error("group cycle detected")]
-    GroupCycle {
-        stack: Vec<GroupId>,
-        repeated: GroupId,
-    },
+    #[error("group cycle detected (TODO: format message)")]
+    GroupCycle { stack: Vec<GroupId>, repeated: GroupId },
+
+    #[error("target requires payload of type {required:?} that the mapped source did not provide")]
+    MissingPayload { required: PayloadKind },
 }
 
 #[derive(Debug)]
@@ -45,45 +48,52 @@ impl Router {
 
     pub fn fire(&self, source: &Source) -> Result<RouteResult, RouteError> {
         let mut ctx = FireCtx::new(self.group_count);
-        let source_kind = source_kind(source);
-        self.fire_source(source, source_kind, &mut ctx)?;
+        let payload = source_payload(source);
+        self.fire_source(source, payload, &mut ctx)?;
         Ok(RouteResult {
             matched: ctx.matched,
             effects: ctx.effects,
         })
     }
 
-    fn fire_source(&self, source: &Source, source_kind: Option<KeyEventKind>, ctx: &mut FireCtx) -> Result<(), RouteError> {
+    fn fire_source(&self, source: &Source, payload: Option<Payload>, ctx: &mut FireCtx) -> Result<(), RouteError> {
         let key = SourceKey::from(source);
         let Some(targets) = self.by_source.get(&key) else {
             return Ok(());
         };
         ctx.matched = true;
         for target in targets {
-            self.fire_target(target, source_kind, ctx)?;
+            self.fire_target(target, payload, ctx)?;
         }
         Ok(())
     }
 
-    fn fire_target(&self, target: &Target, source_kind: Option<KeyEventKind>, ctx: &mut FireCtx) -> Result<(), RouteError> {
+    fn fire_target(&self, target: &Target, payload: Option<Payload>, ctx: &mut FireCtx) -> Result<(), RouteError> {
         match target {
             Target::Token(token) => {
-                let token = match source_kind {
+                let token = match payload.and_then(Payload::token_kind) {
                     Some(kind) => token.clone().with_kind(kind),
                     None => token.clone(),
                 };
                 ctx.effects.push(RouteEffect::Token(token));
                 Ok(())
             }
-            Target::Action(action) => {
-                if fires_non_token_target(source_kind) {
-                    ctx.effects.push(RouteEffect::Action(action.clone()));
-                }
+            Target::InheritToken(target) => {
+                let payload = payload.and_then(Payload::token).ok_or(RouteError::MissingPayload {
+                    required: PayloadKind::Token,
+                })?;
+                ctx.effects.push(RouteEffect::Token(target.to_token(payload)));
                 Ok(())
             }
             Target::Group(group) => {
-                if fires_non_token_target(source_kind) {
+                if fires_non_token_target(payload) {
                     self.fire_group(*group, ctx)?;
+                }
+                Ok(())
+            }
+            Target::Action(action) => {
+                if fires_non_token_target(payload) {
+                    ctx.effects.push(RouteEffect::Action(action.clone()));
                 }
                 Ok(())
             }
@@ -98,15 +108,15 @@ impl Router {
     }
 }
 
-fn source_kind(source: &Source) -> Option<KeyEventKind> {
+fn source_payload(source: &Source) -> Option<Payload> {
     match source {
-        Source::Token(token) => Some(token.kind()),
+        Source::Token(token) => Some(Payload::Token(TokenPayload::from_token(token))),
         Source::Event(_) | Source::Group(_) => None,
     }
 }
 
-fn fires_non_token_target(kind: Option<KeyEventKind>) -> bool {
-    match kind {
+fn fires_non_token_target(payload: Option<Payload>) -> bool {
+    match payload.and_then(Payload::token_kind) {
         None => true,
         Some(KeyEventKind::Press | KeyEventKind::Repeat) => true,
         Some(KeyEventKind::Release) => false,
@@ -523,6 +533,52 @@ tok_utf8("x") => tok_utf8("y")
     }
 
     #[test]
+    fn normal_token_target_does_not_copy_modifiers() {
+        let router = router(r#"
+@version 1
+tok_utf8("x", ctrl) => tok_utf8("y")
+"#);
+
+        let result = router.fire(&Source::Token(Token::Utf8 {
+            ch: 'x',
+            mods: Mods::CTRL,
+            kind: KeyEventKind::Repeat,
+        })).unwrap();
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::Utf8 {
+                ch: 'y',
+                mods: Mods::EMPTY,
+                kind: KeyEventKind::Repeat,
+            })],
+        );
+    }
+
+    #[test]
+    fn inherit_token_copies_modifiers_and_kind() {
+        let router = router(r#"
+@version 1
+tok_utf8("x", ctrl, alt) => inherit_tok_key(enter)
+"#);
+
+        let result = router.fire(&Source::Token(Token::Utf8 {
+            ch: 'x',
+            mods: Mods::CTRL | Mods::ALT,
+            kind: KeyEventKind::Release,
+        })).unwrap();
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::Key {
+                key: Key::Enter,
+                mods: Mods::CTRL | Mods::ALT,
+                kind: KeyEventKind::Release,
+            })],
+        );
+    }
+
+    #[test]
     fn same_group_can_be_used_twice_if_not_recursive() {
         let router = router(r#"
 @version 1
@@ -605,6 +661,7 @@ group("c") => group("b")
                 assert!(!stack.is_empty());
                 assert!(stack.contains(&repeated));
             }
+            _ => panic!("expected route error to be GroupCycle"),
         }
     }
 

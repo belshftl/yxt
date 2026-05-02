@@ -91,8 +91,14 @@ pub enum ConfigError {
     #[error("action cannot be used as mapping source")]
     ActionAsSource { span: Span },
 
+    #[error("inherit token cannot be used as mapping source")]
+    InheritTokenAsSource { span: Span },
+
     #[error("event cannot be used as mapping target")]
     EventAsTarget { span: Span },
+
+    #[error("target requires payload of type {required:?} that the mapped source did not provide")]
+    TargetRequiresPayload { required: PayloadKind, span: Span },
 
     #[error("cannot map a group to itself")]
     GroupSelfMap { span: Span },
@@ -197,14 +203,16 @@ impl ConfigBuilder {
         };
         let from = self.lower_source(from_expr)?;
         let to = self.lower_target(to_expr)?;
+        let restrict = to.requires_payload();
 
-        if let (Source::Group(a), Target::Group(b)) = (&from, &to) {
-            if a == b {
-                return Err(ConfigError::GroupSelfMap { span });
-            }
+        if let Some(required) = restrict && from.provides_payload() != restrict {
+            Err(ConfigError::TargetRequiresPayload { required, span })
+        } else if let (Source::Group(a), Target::Group(b)) = (&from, &to) && a == b {
+            Err(ConfigError::GroupSelfMap { span })
+        } else {
+            self.mappings.push(Mapping { from, to, span });
+            Ok(())
         }
-        self.mappings.push(Mapping { from, to, span });
-        Ok(())
     }
 
     fn lower_source(&self, expr: Expr) -> Result<Source, ConfigError> {
@@ -213,6 +221,7 @@ impl ConfigBuilder {
             Entity::Event(x) => Ok(Source::Event(x)),
             Entity::Token(x) => Ok(Source::Token(x)),
             Entity::Group(x) => Ok(Source::Group(x)),
+            Entity::InheritToken(_) => Err(ConfigError::InheritTokenAsSource { span }),
             Entity::Action(_) => Err(ConfigError::ActionAsSource { span }),
         }
     }
@@ -222,6 +231,7 @@ impl ConfigBuilder {
         match self.lower_entity(expr)? {
             Entity::Token(x) => Ok(Target::Token(x)),
             Entity::Group(x) => Ok(Target::Group(x)),
+            Entity::InheritToken(x) => Ok(Target::InheritToken(x)),
             Entity::Action(x) => Ok(Target::Action(x)),
             Entity::Event(_) => Err(ConfigError::EventAsTarget { span }),
         }
@@ -243,6 +253,8 @@ impl ConfigBuilder {
                     })?;
                     Ok(Entity::Group(id))
                 }
+                "inherit_tok_utf8" => lower_inherit_tok_utf8(args, span),
+                "inherit_tok_key" => lower_inherit_tok_key(args, span),
                 "act_exec" => Ok(Entity::Action(Action::Command(lower_exec_command(args, span)?))),
                 "act_shell" => Ok(Entity::Action(Action::Command(lower_shell_command(args, span)?))),
                 _ => Err(ConfigError::UnknownEntity { name, span }),
@@ -256,6 +268,7 @@ enum Entity {
     Event(Event),
     Token(Token),
     Group(GroupId),
+    InheritToken(InheritToken),
     Action(Action),
 }
 
@@ -309,10 +322,10 @@ fn lower_tok_utf8(args: Vec<Arg>, span: Span) -> Result<Entity, ConfigError> {
     };
     let mut chars = v.chars();
     let Some(ch) = chars.next() else {
-        return Err(ConfigError::BadEntityArgs { kind: "tok_utf8", span });
+        return Err(ConfigError::TokUtf8NeedsOneChar { span });
     };
     if chars.next().is_some() {
-        return Err(ConfigError::BadEntityArgs { kind: "tok_utf8", span });
+        return Err(ConfigError::TokUtf8NeedsOneChar { span });
     }
     let mods = lower_mods(args, span)?;
     Ok(Entity::Token(Token::press_utf8(ch, mods)))
@@ -326,6 +339,32 @@ fn lower_tok_key(args: Vec<Arg>, span: Span) -> Result<Entity, ConfigError> {
     let key = lower_key_name(&v, span)?;
     let mods = lower_mods(args, span)?;
     Ok(Entity::Token(Token::press_key(key, mods)))
+}
+
+fn lower_inherit_tok_utf8(args: Vec<Arg>, span: Span) -> Result<Entity, ConfigError> {
+    let v = expect_one_string(args).map_err(|_| ConfigError::BadEntityArgs {
+        kind: "inherit_tok_utf8", span,
+    })?;
+    let mut chars = v.chars();
+    let Some(ch) = chars.next() else {
+        return Err(ConfigError::TokUtf8NeedsOneChar { span });
+    };
+    if chars.next().is_some() {
+        return Err(ConfigError::TokUtf8NeedsOneChar { span });
+    }
+    Ok(Entity::InheritToken(InheritToken::Utf8 { ch }))
+}
+
+fn lower_inherit_tok_key(args: Vec<Arg>, span: Span) -> Result<Entity, ConfigError> {
+    let mut args = args.into_iter();
+    let Some(Arg::Ident(v)) = args.next() else {
+        return Err(ConfigError::BadEntityArgs { kind: "inherit_tok_key", span });
+    };
+    if args.next().is_some() {
+        return Err(ConfigError::BadEntityArgs { kind: "inherit_tok_key", span });
+    }
+    let key = lower_key_name(&v, span)?;
+    Ok(Entity::InheritToken(InheritToken::Key { key }))
 }
 
 fn lower_mods(args: impl IntoIterator<Item = Arg>, span: Span) -> Result<Mods, ConfigError> {
@@ -512,5 +551,572 @@ impl ExprExt for Expr {
         match self {
             Expr::Call { span, .. } => *span,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sp() -> Span {
+        Span {
+            ctx: crate::config::line::LineCtx {
+                file: crate::config::line::FileId(0),
+                line: 0,
+            },
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn s(v: &str) -> Arg {
+        Arg::String(v.to_owned())
+    }
+
+    fn ident(v: &str) -> Arg {
+        Arg::Ident(v.to_owned())
+    }
+
+    fn call(name: &str, args: Vec<Arg>) -> Expr {
+        Expr::Call {
+            name: name.to_owned(),
+            args,
+            span: sp(),
+        }
+    }
+
+    fn call_arg(name: &str, args: Vec<Arg>) -> Arg {
+        Arg::Call(call(name, args))
+    }
+
+    fn directive(name: &str, args: Vec<Arg>) -> Stmt {
+        Stmt::Directive {
+            name: name.to_owned(),
+            args,
+            span: sp(),
+        }
+    }
+
+    fn define(kind: &str, args: Vec<Arg>) -> Stmt {
+        Stmt::Definition {
+            kind: kind.to_owned(),
+            args,
+            span: sp(),
+        }
+    }
+
+    fn map(lhs: Expr, rhs: Expr) -> Stmt {
+        Stmt::Mapping {
+            lhs,
+            op: MappingOp::Right,
+            rhs,
+            span: sp(),
+        }
+    }
+
+    fn map_left(lhs: Expr, rhs: Expr) -> Stmt {
+        Stmt::Mapping {
+            lhs,
+            op: MappingOp::Left,
+            rhs,
+            span: sp(),
+        }
+    }
+
+    fn finish(stmts: Vec<Stmt>) -> Result<Config, ConfigError> {
+        let mut b = ConfigBuilder::default();
+        for stmt in stmts {
+            b.apply_stmt(stmt)?;
+        }
+        b.finish()
+    }
+
+    fn err(stmts: Vec<Stmt>) -> ConfigError {
+        finish(stmts).unwrap_err()
+    }
+
+    fn group_id(config: &Config, name: &str) -> GroupId {
+        config.groups.lookup(name).unwrap()
+    }
+
+    #[test]
+    fn unknown_directive_is_rejected() {
+        let e = err(vec![directive("bogus", vec![])]);
+        assert!(matches!(e, ConfigError::UnknownDirective { name, .. } if name == "bogus"));
+    }
+
+    #[test]
+    fn defines_groups_and_rejects_duplicates() {
+        let config = finish(vec![
+            define("group", vec![s("reload")]),
+            define("group", vec![s("other")]),
+        ]).unwrap();
+        assert!(config.groups.lookup("reload").is_some());
+        assert!(config.groups.lookup("other").is_some());
+
+        let e = err(vec![
+            define("group", vec![s("reload")]),
+            define("group", vec![s("reload")]),
+        ]);
+        assert!(matches!(e, ConfigError::DuplicateGroup { name, .. } if name == "reload"));
+    }
+
+    #[test]
+    fn rejects_bad_group_definition_args() {
+        for args in [
+            vec![],
+            vec![ident("reload")],
+            vec![s("a"), s("b")],
+        ] {
+            let e = err(vec![define("group", args)]);
+            assert!(matches!(e, ConfigError::BadDefinitionArgs { kind: "group", .. }));
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_definition_kind() {
+        let e = err(vec![define("abab", vec![s("x")])]);
+        assert!(matches!(e, ConfigError::UnknownDefinition { kind, .. } if kind == "abab"));
+    }
+
+    #[test]
+    fn service_exec_is_stored() {
+        let config = finish(vec![directive(
+            "service",
+            vec![
+                s("helper"),
+                call_arg("exec", vec![s("somehelper"), s("--flag")]),
+            ],
+        )]).unwrap();
+        assert_eq!(
+            config.services,
+            vec![Service {
+                name: "helper".to_owned(),
+                command: CommandSpec::Exec {
+                    argv: vec!["somehelper".to_owned(), "--flag".to_owned()],
+                },
+            }],
+        );
+    }
+
+    #[test]
+    fn service_shell_is_stored() {
+        let config = finish(vec![directive(
+            "service",
+            vec![s("helper"), call_arg("sh", vec![s("echo hi")])],
+        )]).unwrap();
+        assert_eq!(
+            config.services,
+            vec![Service {
+                name: "helper".to_owned(),
+                command: CommandSpec::Shell {
+                    command: "echo hi".to_owned(),
+                },
+            }],
+        );
+    }
+
+    #[test]
+    fn service_requires_name_and_command() {
+        for args in [
+            vec![],
+            vec![ident("helper"), call_arg("exec", vec![s("x")])],
+            vec![s("helper")],
+            vec![s("helper"), s("not-call")],
+            vec![s("helper"), call_arg("exec", vec![s("x")]), s("extra")],
+            vec![s(""), call_arg("exec", vec![s("x")])],
+        ] {
+            let e = err(vec![directive("service", args)]);
+            assert!(matches!(e, ConfigError::BadDirectiveArgs { kind: "service", .. }));
+        }
+    }
+
+    #[test]
+    fn service_names_must_be_unique() {
+        let e = err(vec![
+            directive("service", vec![s("helper"), call_arg("exec", vec![s("a")])]),
+            directive("service", vec![s("helper"), call_arg("exec", vec![s("b")])]),
+        ]);
+        assert!(matches!(e, ConfigError::DuplicateDirective { kind: "service", .. }));
+    }
+
+    #[test]
+    fn command_exec_requires_string_args_and_nonempty_program() {
+        for command in [
+            call_arg("exec", vec![]),
+            call_arg("exec", vec![s("")]),
+        ] {
+            let e = err(vec![directive("service", vec![s("helper"), command])]);
+            assert!(matches!(e, ConfigError::EmptyCommand { .. }));
+        }
+        let e = err(vec![directive(
+            "service",
+            vec![s("helper"), call_arg("exec", vec![ident("prog")])],
+        )]);
+        assert!(matches!(e, ConfigError::BadCommandArgs { kind: "exec", .. }));
+    }
+
+    #[test]
+    fn command_shell_requires_one_nonempty_string() {
+        for command in [
+            call_arg("sh", vec![]),
+            call_arg("sh", vec![s("a"), s("b")]),
+            call_arg("sh", vec![ident("echo")]),
+        ] {
+            let e = err(vec![directive("service", vec![s("helper"), command])]);
+            assert!(matches!(e, ConfigError::BadCommandArgs { kind: "sh", .. }));
+        }
+
+        let e = err(vec![directive(
+            "service",
+            vec![s("helper"), call_arg("sh", vec![s("")])],
+        )]);
+        assert!(matches!(e, ConfigError::EmptyCommand { .. }));
+    }
+
+    #[test]
+    fn unknown_command_kind_is_rejected() {
+        let e = err(vec![directive(
+            "service",
+            vec![s("name"), call_arg("foo", vec![s("bar")])],
+        )]);
+        assert!(matches!(e, ConfigError::UnknownCommandKind { kind, .. } if kind == "foo"));
+    }
+
+    #[test]
+    fn lowers_token_mapping() {
+        let config = finish(vec![map(
+            call("tok_key", vec![ident("f1")]),
+            call("tok_utf8", vec![s("x"), ident("ctrl"), ident("alt")]),
+        )]).unwrap();
+
+        assert_eq!(
+            config.mappings,
+            vec![Mapping {
+                from: Source::Token(Token::press_key(Key::Function(1), Mods::EMPTY)),
+                to: Target::Token(Token::press_utf8('x', Mods::CTRL | Mods::ALT)),
+                span: sp(),
+            }],
+        );
+    }
+
+    #[test]
+    fn left_mapping_reverses_sides() {
+        let config = finish(vec![map_left(
+            call("tok_utf8", vec![s("x")]),
+            call("tok_key", vec![ident("f1")]),
+        )]).unwrap();
+
+        assert_eq!(
+            config.mappings[0].from,
+            Source::Token(Token::press_key(Key::Function(1), Mods::EMPTY)),
+        );
+        assert_eq!(
+            config.mappings[0].to,
+            Target::Token(Token::press_utf8('x', Mods::EMPTY)),
+        );
+    }
+
+    #[test]
+    fn group_mapping_uses_defined_group_id() {
+        let config = finish(vec![
+            define("group", vec![s("reload")]),
+            map(
+                call("tok_key", vec![ident("f5")]),
+                call("group", vec![s("reload")]),
+            ),
+        ]).unwrap();
+
+        let reload = group_id(&config, "reload");
+        assert_eq!(
+            config.mappings[0],
+            Mapping {
+                from: Source::Token(Token::press_key(Key::Function(5), Mods::EMPTY)),
+                to: Target::Group(reload),
+                span: sp(),
+            },
+        );
+    }
+
+    #[test]
+    fn unknown_group_is_rejected() {
+        let e = err(vec![map(
+            call("tok_key", vec![ident("f1")]),
+            call("group", vec![s("xyz")]),
+        )]);
+        assert!(matches!(e, ConfigError::UnknownGroup { name, .. } if name == "xyz"));
+    }
+
+    #[test]
+    fn group_self_map_is_rejected() {
+        let e = err(vec![
+            define("group", vec![s("g")]),
+            map(call("group", vec![s("g")]), call("group", vec![s("g")])),
+        ]);
+        assert!(matches!(e, ConfigError::GroupSelfMap { .. }));
+    }
+
+    #[test]
+    fn action_cannot_be_source() {
+        let e = err(vec![map(
+            call("act_shell", vec![s("echo hi")]),
+            call("tok_utf8", vec![s("x")]),
+        )]);
+        assert!(matches!(e, ConfigError::ActionAsSource { .. }));
+    }
+
+    #[test]
+    fn event_cannot_be_target() {
+        let e = err(vec![map(
+            call("tok_key", vec![ident("f1")]),
+            call("evt_sockdata_utf8", vec![s("reload")]),
+        )]);
+        assert!(matches!(e, ConfigError::EventAsTarget { .. }));
+    }
+
+    #[test]
+    fn inherit_token_cannot_be_source() {
+        let e = err(vec![map(
+            call("inherit_tok_utf8", vec![s("x")]),
+            call("tok_utf8", vec![s("y")]),
+        )]);
+        assert!(matches!(e, ConfigError::InheritTokenAsSource { .. }));
+    }
+
+    #[test]
+    fn inherit_token_requires_token_payload() {
+        let e = err(vec![
+            define("group", vec![s("g")]),
+            map(call("group", vec![s("g")]), call("inherit_tok_utf8", vec![s("x")])),
+        ]);
+        assert!(matches!(e, ConfigError::TargetRequiresPayload { required: PayloadKind::Token, .. }));
+    }
+
+    #[test]
+    fn normal_group_does_not_propagate_token_payload() {
+        let e = err(vec![
+            define("group", vec![s("g")]),
+            map(call("tok_utf8", vec![s("d")]), call("group", vec![s("g")])),
+            map(call("group", vec![s("g")]), call("inherit_tok_utf8", vec![s("w")])),
+        ]);
+        assert!(matches!(e, ConfigError::TargetRequiresPayload { required: PayloadKind::Token, .. }));
+    }
+
+    #[test]
+    fn inherit_token_targets_are_stored_for_token_sources() {
+        let config = finish(vec![
+            map(
+                call("tok_utf8", vec![s("d")]),
+                call("inherit_tok_utf8", vec![s("w")]),
+            ),
+            map(
+                call("tok_utf8", vec![s(" ")]),
+                call("inherit_tok_key", vec![ident("enter")]),
+            ),
+        ]).unwrap();
+
+        assert_eq!(
+            config.mappings[0].to,
+            Target::InheritToken(InheritToken::Utf8 { ch: 'w' }),
+        );
+        assert_eq!(
+            config.mappings[1].to,
+            Target::InheritToken(InheritToken::Key { key: Key::Enter }),
+        );
+    }
+
+    #[test]
+    fn event_sockdata_utf8_stores_utf8_bytes() {
+        let config = finish(vec![map(
+            call("evt_sockdata_utf8", vec![s("å")]),
+            call("act_shell", vec![s("reload")]),
+        )]).unwrap();
+
+        assert_eq!(
+            config.mappings[0].from,
+            Source::Event(Event::Sockdata("å".as_bytes().to_vec())),
+        );
+    }
+
+    #[test]
+    fn evt_signal_lowers_supported_signals() {
+        let config = finish(vec![map(
+            call("evt_signal", vec![s("SIGWINCH")]),
+            call("act_shell", vec![s("resize")]),
+        )]).unwrap();
+
+        assert_eq!(
+            config.mappings[0].from,
+            Source::Event(Event::Signal(Signal(libc::SIGWINCH))),
+        );
+    }
+
+    #[test]
+    fn evt_signal_rejects_unknown_and_unsupported_signals() {
+        let e = err(vec![map(
+            call("evt_signal", vec![s("SIGXYZ")]),
+            call("act_shell", vec![s("x")]),
+        )]);
+        assert!(matches!(e, ConfigError::UnknownSignal { name, .. } if name == "SIGXYZ"));
+
+        let e = err(vec![map(
+            call("evt_signal", vec![s("SIGKILL")]),
+            call("act_shell", vec![s("x")]),
+        )]);
+        assert!(matches!(
+            e,
+            ConfigError::UnsupportedSignal { name, reason: "uncatchable", .. } if name == "SIGKILL"
+        ));
+
+        let e = err(vec![map(
+            call("evt_signal", vec![s("SIGSEGV")]),
+            call("act_shell", vec![s("x")]),
+        )]);
+        assert!(matches!(e, ConfigError::UnsupportedSignal { name, .. } if name == "SIGSEGV"));
+    }
+
+    #[test]
+    fn tok_utf8_requires_exactly_one_unicode_scalar() {
+        let ok = finish(vec![map(
+            call("tok_utf8", vec![s("å")]),
+            call("tok_utf8", vec![s("x")]),
+        )]);
+        assert!(ok.is_ok());
+
+        for bad in ["", "ab"] {
+            let e = err(vec![map(
+                call("tok_utf8", vec![s(bad)]),
+                call("tok_utf8", vec![s("x")]),
+            )]);
+            assert!(matches!(e, ConfigError::TokUtf8NeedsOneChar { .. }));
+        }
+    }
+
+    #[test]
+    fn inherit_tok_utf8_requires_exactly_one_unicode_scalar() {
+        for bad in ["", "ab"] {
+            let e = err(vec![map(
+                call("tok_utf8", vec![s("x")]),
+                call("inherit_tok_utf8", vec![s(bad)]),
+            )]);
+            assert!(matches!(e, ConfigError::TokUtf8NeedsOneChar { .. }));
+        }
+    }
+
+    #[test]
+    fn tok_key_accepts_known_key_names_and_function_keys() {
+        let config = finish(vec![
+            map(call("tok_key", vec![ident("esc")]), call("tok_utf8", vec![s("a")])),
+            map(call("tok_key", vec![ident("enter")]), call("tok_utf8", vec![s("b")])),
+            map(call("tok_key", vec![ident("left")]), call("tok_utf8", vec![s("c")])),
+            map(call("tok_key", vec![ident("f35")]), call("tok_utf8", vec![s("d")])),
+            map(call("tok_key", vec![ident("kp_9")]), call("tok_utf8", vec![s("e")])),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            config.mappings[0].from,
+            Source::Token(Token::press_key(Key::Esc, Mods::EMPTY)),
+        );
+        assert_eq!(
+            config.mappings[1].from,
+            Source::Token(Token::press_key(Key::Enter, Mods::EMPTY)),
+        );
+        assert_eq!(
+            config.mappings[2].from,
+            Source::Token(Token::press_key(Key::Arrow(Direction::Left), Mods::EMPTY)),
+        );
+        assert_eq!(
+            config.mappings[3].from,
+            Source::Token(Token::press_key(Key::Function(35), Mods::EMPTY)),
+        );
+        assert_eq!(
+            config.mappings[4].from,
+            Source::Token(Token::press_key(Key::Keypad(KeypadKey::Digit(9)), Mods::EMPTY)),
+        );
+    }
+
+    #[test]
+    fn tok_key_rejects_unknown_or_out_of_range_key_names() {
+        for name in ["bogus", "f0", "f36", "kp_10", "kp_"] {
+            let e = err(vec![map(
+                call("tok_key", vec![ident(name)]),
+                call("tok_utf8", vec![s("x")]),
+            )]);
+            assert!(matches!(e, ConfigError::UnknownKey { name: got, .. } if got == name));
+        }
+    }
+
+    #[test]
+    fn modifiers_are_lowered_and_duplicates_rejected() {
+        let config = finish(vec![map(
+            call("tok_key", vec![ident("f1"), ident("shift"), ident("alt"), ident("ctrl")]),
+            call("tok_utf8", vec![s("x")]),
+        )]).unwrap();
+
+        assert_eq!(
+            config.mappings[0].from,
+            Source::Token(Token::press_key(
+                Key::Function(1),
+                Mods::SHIFT | Mods::ALT | Mods::CTRL,
+            )),
+        );
+
+        let e = err(vec![map(
+            call("tok_key", vec![ident("f1"), ident("ctrl"), ident("ctrl")]),
+            call("tok_utf8", vec![s("x")]),
+        )]);
+        assert!(matches!(e, ConfigError::DuplicateModifier { name, .. } if name == "ctrl"));
+    }
+
+    #[test]
+    fn unknown_or_non_ident_modifier_is_rejected() {
+        let e = err(vec![map(
+            call("tok_key", vec![ident("f1"), ident("xyz")]),
+            call("tok_utf8", vec![s("x")]),
+        )]);
+        assert!(matches!(e, ConfigError::UnknownModifier { name, .. } if name == "xyz"));
+
+        let e = err(vec![map(
+            call("tok_key", vec![ident("f1"), s("ctrl")]),
+            call("tok_utf8", vec![s("x")]),
+        )]);
+        assert!(matches!(e, ConfigError::BadModifier { .. }));
+    }
+
+    #[test]
+    fn act_exec_and_act_shell_lower_to_actions() {
+        let config = finish(vec![
+            map(
+                call("tok_key", vec![ident("f1")]),
+                call("act_exec", vec![s("prog"), s("arg")]),
+            ),
+            map(
+                call("tok_key", vec![ident("f2")]),
+                call("act_shell", vec![s("echo hi")]),
+            ),
+        ]).unwrap();
+
+        assert_eq!(
+            config.mappings[0].to,
+            Target::Action(Action::Command(CommandSpec::Exec {
+                argv: vec!["prog".to_owned(), "arg".to_owned()],
+            })),
+        );
+        assert_eq!(
+            config.mappings[1].to,
+            Target::Action(Action::Command(CommandSpec::Shell {
+                command: "echo hi".to_owned(),
+            })),
+        );
+    }
+
+    #[test]
+    fn unknown_entity_is_rejected() {
+        let e = err(vec![map(
+            call("tok_key", vec![ident("f1")]),
+            call("bogus", vec![]),
+        )]);
+        assert!(matches!(e, ConfigError::UnknownEntity { name, .. } if name == "bogus"));
     }
 }

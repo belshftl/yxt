@@ -70,7 +70,7 @@ pub enum ConfigPathError {
     #[error("no command was provided")]
     NoCommand,
 
-    #[error("command path {0:?} has no basename")]
+    #[error("command {0:?} has no basename")]
     CommandHasNoBasename(OsString),
 
     #[error("no config path was provided (implicit config lookup would use '{implicit_path}' if enabled)")]
