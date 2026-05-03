@@ -76,26 +76,21 @@ impl ControlSock {
         &self.path
     }
 
-    pub fn as_fd(&self) -> BorrowedFd<'_> {
-        self.socket.as_fd()
-    }
-
-    pub fn raw_fd(&self) -> RawFd {
-        self.socket.as_raw_fd()
-    }
-
-    pub fn recv_utf8_datagram(&self) -> Result<Option<String>, ControlSockError> {
+    pub fn recv(&self) -> Result<Option<Vec<u8>>, ControlSockError> {
         let mut buf = vec![0u8; self.max_datagram_size];
         match self.socket.recv(&mut buf) {
-            Ok(n) => Ok(Some(std::str::from_utf8(&buf[..n]).map_err(ControlSockError::BadUtf8)?.to_owned())),
+            Ok(n) => {
+                buf.truncate(n);
+                Ok(Some(buf))
+            }
             Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => Ok(None),
             Err(e) => Err(ControlSockError::Recv(e)),
         }
     }
 
-    pub fn drain_utf8_datagrams(&self) -> Result<Vec<String>, ControlSockError> {
+    pub fn drain(&self) -> Result<Vec<Vec<u8>>, ControlSockError> {
         let mut out = Vec::new();
-        while let Some(data) = self.recv_utf8_datagram()? {
+        while let Some(data) = self.recv()? {
             out.push(data);
         }
         Ok(out)
@@ -105,6 +100,18 @@ impl ControlSock {
 impl Drop for ControlSock {
     fn drop(&mut self) {
         _ = std::fs::remove_file(&self.path);
+    }
+}
+
+impl AsFd for ControlSock {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.socket.as_fd()
+    }
+}
+
+impl AsRawFd for ControlSock {
+    fn as_raw_fd(&self) -> RawFd {
+        self.socket.as_raw_fd()
     }
 }
 

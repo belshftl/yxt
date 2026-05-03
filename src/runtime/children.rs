@@ -261,6 +261,9 @@ impl ServiceManager {
     }
 
     pub fn begin_shutdown(&mut self, now: Instant) -> Result<(), ServiceError> {
+        if self.shutting_down {
+            return Ok(());
+        }
         self.shutting_down = true;
         let deadline = now + self.shutdown_grace;
         for sv in &mut self.services {
@@ -274,6 +277,9 @@ impl ServiceManager {
     }
 
     pub fn poll_shutdown(&mut self, now: Instant) -> Result<(), ServiceError> {
+        if self.is_shutdown_complete() {
+            return Ok(());
+        }
         self.check_exits()?;
         for sv in &mut self.services {
             let ServiceState::Terminating { deadline } = sv.state() else {

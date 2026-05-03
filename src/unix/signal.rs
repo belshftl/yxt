@@ -66,14 +66,6 @@ impl SignalRegistry {
         Ok(())
     }
 
-    pub fn as_fd(&self) -> BorrowedFd<'_> {
-        self.read.as_fd()
-    }
-
-    pub fn as_raw_fd(&self) -> RawFd {
-        self.read.as_raw_fd()
-    }
-
     pub fn drain(&mut self) -> io::Result<Vec<libc::c_int>> {
         self.drain_pipe()?;
         let mut out = Vec::new();
@@ -104,5 +96,17 @@ impl Drop for SignalRegistry {
         for entry in self.entries.drain(..) {
             signal_hook::low_level::unregister(entry.id);
         }
+    }
+}
+
+impl AsFd for SignalRegistry {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.read.as_fd()
+    }
+}
+
+impl AsRawFd for SignalRegistry {
+    fn as_raw_fd(&self) -> RawFd {
+        self.read.as_raw_fd()
     }
 }

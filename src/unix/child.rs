@@ -8,6 +8,22 @@ use std::process::{Child, Command, Stdio};
 
 use super::tty::{dup_fd, open_pty_pair, set_winsize, switch_to_ctty, PtyOpenError};
 
+pub trait ChildExt {
+    fn signal(&self, sig: libc::c_int) -> std::io::Result<()>;
+}
+
+impl ChildExt for Child {
+    fn signal(&self, sig: libc::c_int) -> std::io::Result<()> {
+        if unsafe { libc::kill(self.id() as libc::pid_t, sig) } < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::ESRCH) {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OsCommandSpec {
     Exec {
@@ -91,7 +107,7 @@ impl Default for PtyChildSpawnOptions {
 
 #[derive(Debug)]
 pub struct PtyChild {
-    pub master: OwnedFd,
+    pub pty_master: OwnedFd,
     pub child: Child,
 }
 
@@ -144,7 +160,7 @@ pub fn spawn_pty_attached(spec: &OsCommandSpec, opts: &PtyChildSpawnOptions) -> 
     }
 
     let child = cmd.spawn()?;
-    Ok(PtyChild { master: pair.master, child })
+    Ok(PtyChild { pty_master: pair.master, child })
 }
 
 fn make_command(spec: &OsCommandSpec) -> Result<Command, ChildError> {
