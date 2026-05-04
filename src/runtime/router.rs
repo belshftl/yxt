@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: MIT
 
-use std::collections::HashMap;
-
 use crate::model::{
-    Action, Config, Event, GroupId, Key, KeyEventKind, Mods, Payload, PayloadKind, Source,
-    Target, Token, TokenPayload,
+    Action, CharPair, Config, Event, GroupId, KeyEventKind, KeyPattern, Mods, ModsPattern,
+    Payload, PayloadKind, Source, Target, Token, TokenPattern, TokenPayload,
 };
+
+#[derive(Debug, Clone, Copy)]
+pub enum RouteInput<'a> {
+    Event(&'a Event),
+    Token(&'a Token),
+    Group(GroupId),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteEffect {
@@ -22,48 +27,56 @@ pub struct RouteResult {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RouteError {
     #[error("group cycle detected (TODO: format message)")]
-    GroupCycle { stack: Vec<GroupId>, repeated: GroupId },
+    GroupCycle {
+        stack: Vec<GroupId>,
+        repeated: GroupId,
+    },
 
     #[error("target requires payload of type {required:?} that the mapped source did not provide")]
-    MissingPayload { required: PayloadKind },
+    MissingPayload {
+        required: PayloadKind,
+    },
 }
 
 #[derive(Debug)]
 pub struct Router {
-    by_source: HashMap<SourceKey, Vec<Target>>,
+    entries: Vec<RouteEntry>,
     group_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RouteEntry {
+    from: Source,
+    to: Target,
 }
 
 impl Router {
     pub fn new(config: &Config) -> Self {
-        let mut by_source: HashMap<SourceKey, Vec<Target>> = HashMap::new();
-        for mapping in &config.mappings {
-            by_source.entry(SourceKey::from(&mapping.from)).or_default().push(mapping.to.clone());
-        }
         Self {
-            by_source,
+            entries: config.mappings.iter().map(|mapping| RouteEntry {
+                from: mapping.from.clone(),
+                to: mapping.to.clone(),
+            }).collect(),
             group_count: config.groups.len(),
         }
     }
 
-    pub fn fire(&self, source: &Source) -> Result<RouteResult, RouteError> {
+    pub fn fire(&self, input: RouteInput<'_>) -> Result<RouteResult, RouteError> {
         let mut ctx = FireCtx::new(self.group_count);
-        let payload = source_payload(source);
-        self.fire_source(source, payload, &mut ctx)?;
+        self.fire_input(input, &mut ctx)?;
         Ok(RouteResult {
             matched: ctx.matched,
             effects: ctx.effects,
         })
     }
 
-    fn fire_source(&self, source: &Source, payload: Option<Payload>, ctx: &mut FireCtx) -> Result<(), RouteError> {
-        let key = SourceKey::from(source);
-        let Some(targets) = self.by_source.get(&key) else {
-            return Ok(());
-        };
-        ctx.matched = true;
-        for target in targets {
-            self.fire_target(target, payload, ctx)?;
+    fn fire_input(&self, input: RouteInput<'_>, ctx: &mut FireCtx) -> Result<(), RouteError> {
+        for entry in &self.entries {
+            let Some(payload) = match_source(&entry.from, input) else {
+                continue;
+            };
+            ctx.matched = true;
+            self.fire_target(&entry.to, payload, ctx)?;
         }
         Ok(())
     }
@@ -71,8 +84,8 @@ impl Router {
     fn fire_target(&self, target: &Target, payload: Option<Payload>, ctx: &mut FireCtx) -> Result<(), RouteError> {
         match target {
             Target::Token(token) => {
-                let token = match payload.and_then(Payload::token_kind) {
-                    Some(kind) => token.clone().with_kind(kind),
+                let token = match payload.and_then(Payload::token) {
+                    Some(payload) => token.clone().with_kind(payload.kind),
                     None => token.clone(),
                 };
                 ctx.effects.push(RouteEffect::Token(token));
@@ -102,21 +115,66 @@ impl Router {
 
     fn fire_group(&self, group: GroupId, ctx: &mut FireCtx) -> Result<(), RouteError> {
         ctx.push_group(group)?;
-        let result = self.fire_source(&Source::Group(group), None, ctx);
+        let result = self.fire_input(RouteInput::Group(group), ctx);
         ctx.pop_group(group);
         result
     }
 }
 
-fn source_payload(source: &Source) -> Option<Payload> {
-    match source {
-        Source::Token(token) => Some(Payload::Token(TokenPayload::from_token(token))),
-        Source::Event(_) | Source::Group(_) => None,
+fn match_source(pattern: &Source, input: RouteInput<'_>) -> Option<Option<Payload>> {
+    match (pattern, input) {
+        (Source::Event(want), RouteInput::Event(got)) if want == got => Some(None),
+        (Source::Group(want), RouteInput::Group(got)) if *want == got => Some(None),
+        (Source::Token(pattern), RouteInput::Token(token)) =>
+            match_token_pattern(pattern, token).map(|p| Some(Payload::Token(p))),
+        _ => None,
+    }
+}
+
+fn match_token_pattern(pattern: &TokenPattern, token: &Token) -> Option<TokenPayload> {
+    match pattern {
+        TokenPattern::Key { key, mods } => {
+            match_key_pattern(key, mods, token)
+        }
+    }
+}
+
+fn match_key_pattern(pattern: &KeyPattern, mods: &ModsPattern, token: &Token) -> Option<TokenPayload> {
+    match (pattern, token) {
+        (KeyPattern::Named(want), Token::Key { key: got, mods: actual_mods, kind }) if want == got => {
+            let logical_mods = *actual_mods;
+            mods.matches(logical_mods).then_some(TokenPayload {
+                actual_mods: *actual_mods,
+                logical_mods,
+                kind: *kind,
+            })
+        }
+        (KeyPattern::CharPair(pair), Token::Utf8 { ch, mods: actual_mods, kind }) => {
+            let logical_mods = char_pair_logical_mods(*pair, *ch, *actual_mods)?;
+            mods.matches(logical_mods).then_some(TokenPayload {
+                actual_mods: *actual_mods,
+                logical_mods,
+                kind: *kind,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn char_pair_logical_mods(pair: CharPair, ch: char, actual_mods: Mods) -> Option<Mods> {
+    if pair.unshifted == pair.shifted {
+        (ch == pair.unshifted).then_some(actual_mods)
+    } else if ch == pair.unshifted {
+        Some(actual_mods & !Mods::SHIFT)
+    } else if ch == pair.shifted {
+        Some(actual_mods | Mods::SHIFT)
+    } else {
+        None
     }
 }
 
 fn fires_non_token_target(payload: Option<Payload>) -> bool {
-    match payload.and_then(Payload::token_kind) {
+    match payload.and_then(Payload::token).map(|p| p.kind) {
         None => true,
         Some(KeyEventKind::Press | KeyEventKind::Repeat) => true,
         Some(KeyEventKind::Release) => false,
@@ -143,14 +201,12 @@ impl FireCtx {
     fn push_group(&mut self, group: GroupId) -> Result<(), RouteError> {
         let idx = group.0;
         debug_assert!(idx < self.active_groups.len());
-
         if self.active_groups[idx] {
             return Err(RouteError::GroupCycle {
                 stack: self.group_stack.clone(),
                 repeated: group,
             });
         }
-
         self.active_groups[idx] = true;
         self.group_stack.push(group);
         Ok(())
@@ -163,50 +219,6 @@ impl FireCtx {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum SourceKey {
-    Event(Event),
-    Token(TokenPattern),
-    Group(GroupId),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum TokenPattern {
-    Utf8 {
-        ch: char,
-        mods: Mods,
-    },
-    Key {
-        key: Key,
-        mods: Mods,
-    },
-}
-
-impl From<&Token> for TokenPattern {
-    fn from(token: &Token) -> Self {
-        match *token {
-            Token::Utf8 { ch, mods, .. } => Self::Utf8 {
-                ch,
-                mods,
-            },
-            Token::Key { key, mods, .. } => Self::Key {
-                key,
-                mods,
-            },
-        }
-    }
-}
-
-impl From<&Source> for SourceKey {
-    fn from(source: &Source) -> Self {
-        match source {
-            Source::Event(event) => Self::Event(event.clone()),
-            Source::Token(token) => Self::Token(TokenPattern::from(token)),
-            Source::Group(group) => Self::Group(*group),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,7 +226,7 @@ mod tests {
     use std::fs;
 
     use crate::config::loader::ConfigLoader;
-    use crate::model::{Action, CommandSpec, Event, Key, Mods, Source, Token};
+    use crate::model::{Action, CommandSpec, Event, Key, Mods, Token};
 
     fn cfg(src: &str) -> crate::model::Config {
         let dir = tempfile::tempdir().unwrap();
@@ -227,36 +239,47 @@ mod tests {
         Router::new(&cfg(src))
     }
 
-    fn key_source(key: Key, mods: Mods) -> Source {
-        Source::Token(Token::press_key(key, mods))
+    fn fire_key(router: &Router, key: Key, mods: Mods) -> RouteResult {
+        let token = Token::press_key(key, mods);
+        router.fire(RouteInput::Token(&token)).unwrap()
     }
 
-    fn utf8_source(ch: char, mods: Mods) -> Source {
-        Source::Token(Token::press_utf8(ch, mods))
+    fn fire_utf8(router: &Router, ch: char, mods: Mods) -> RouteResult {
+        let token = Token::press_utf8(ch, mods);
+        router.fire(RouteInput::Token(&token)).unwrap()
     }
 
-    fn sockdata_source(data: &[u8]) -> Source {
-        Source::Event(Event::Sockdata(data.to_vec()))
+    fn fire_token(router: &Router, token: &Token) -> RouteResult {
+        router.fire(RouteInput::Token(token)).unwrap()
+    }
+
+    fn fire_sockdata(router: &Router, data: &[u8]) -> RouteResult {
+        let event = Event::Sockdata(data.to_vec());
+        router.fire(RouteInput::Event(&event)).unwrap()
     }
 
     #[test]
-    fn unmatched_source_produces_no_effects() {
+    fn unmatched_input_produces_no_effects() {
         let router = router(r#"
 @version 1
-tok_key(f1) => tok_utf8("x")
+key(f1) => send_key('x')
 "#);
-        let result = router.fire(&key_source(Key::Function(2), Mods::EMPTY)).unwrap();
+
+        let result = fire_key(&router, Key::Function(2), Mods::EMPTY);
+
         assert!(!result.matched);
         assert!(result.effects.is_empty());
     }
 
     #[test]
-    fn direct_token_mapping() {
+    fn direct_named_key_to_concrete_utf8_mapping() {
         let router = router(r#"
 @version 1
-tok_key(f1) => tok_utf8("x")
+key(f1) => send_key('x')
 "#);
-        let result = router.fire(&key_source(Key::Function(1), Mods::EMPTY)).unwrap();
+
+        let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
@@ -265,17 +288,35 @@ tok_key(f1) => tok_utf8("x")
     }
 
     #[test]
+    fn direct_named_key_to_named_key_mapping() {
+        let router = router(r#"
+@version 1
+key(f1) => send_key(enter)
+"#);
+
+        let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::press_key(Key::Enter, Mods::EMPTY))],
+        );
+    }
+
+    #[test]
     fn direct_action_mapping() {
         let router = router(r#"
 @version 1
-tok_key(f1) => act_shell("echo hi")
+key(f1) => sh("echo hi")
 "#);
-        let result = router.fire(&key_source(Key::Function(1), Mods::EMPTY)).unwrap();
+
+        let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
             vec![RouteEffect::Action(Action::Command(CommandSpec::Shell {
-                command: "echo hi".to_owned()
+                command: "echo hi".to_owned(),
             }))],
         );
     }
@@ -284,28 +325,59 @@ tok_key(f1) => act_shell("echo hi")
     fn event_source_mapping() {
         let router = router(r#"
 @version 1
-evt_sockdata_utf8("reload") => act_shell("reload")
+sockdata_utf8("reload") => sh("reload")
 "#);
-        let result = router.fire(&sockdata_source(b"reload")).unwrap();
+
+        let result = fire_sockdata(&router, b"reload");
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
             vec![RouteEffect::Action(Action::Command(CommandSpec::Shell {
-                command: "reload".to_owned()
+                command: "reload".to_owned(),
             }))],
         );
-        assert!(!router.fire(&sockdata_source(b"reload\n")).unwrap().matched);
+
+        assert!(!fire_sockdata(&router, b"reload\n").matched);
     }
 
     #[test]
-    fn source_matching_is_exact_for_modifiers() {
+    fn source_default_mod_pattern_is_none() {
         let router = router(r#"
 @version 1
-tok_key(f1, ctrl) => tok_utf8("x")
+key(f1) => send_key('x')
 "#);
-        assert!(!router.fire(&key_source(Key::Function(1), Mods::EMPTY)).unwrap().matched);
-        assert!(!router.fire(&key_source(Key::Function(1), Mods::ALT)).unwrap().matched);
-        let result = router.fire(&key_source(Key::Function(1), Mods::CTRL)).unwrap();
+
+        assert!(fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
+        assert!(!fire_key(&router, Key::Function(1), Mods::CTRL).matched);
+        assert!(!fire_key(&router, Key::Function(1), Mods::SHIFT).matched);
+    }
+
+    #[test]
+    fn source_any_mod_pattern_matches_everything() {
+        let router = router(r#"
+@version 1
+key(f1, any) => send_key('x')
+"#);
+
+        assert!(fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
+        assert!(fire_key(&router, Key::Function(1), Mods::CTRL).matched);
+        assert!(fire_key(&router, Key::Function(1), Mods::CTRL | Mods::ALT).matched);
+    }
+
+    #[test]
+    fn source_explicit_mod_pattern_is_exact() {
+        let router = router(r#"
+@version 1
+key(f1, ctrl) => send_key('x')
+"#);
+
+        assert!(!fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
+        assert!(!fire_key(&router, Key::Function(1), Mods::ALT).matched);
+        assert!(!fire_key(&router, Key::Function(1), Mods::CTRL | Mods::ALT).matched);
+
+        let result = fire_key(&router, Key::Function(1), Mods::CTRL);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
@@ -317,9 +389,11 @@ tok_key(f1, ctrl) => tok_utf8("x")
     fn target_token_modifiers_are_preserved() {
         let router = router(r#"
 @version 1
-tok_key(f1) => tok_utf8("x", ctrl, alt)
+key(f1) => send_key('x', ctrl, alt)
 "#);
-        let result = router.fire(&key_source(Key::Function(1), Mods::EMPTY)).unwrap();
+
+        let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
@@ -331,12 +405,14 @@ tok_key(f1) => tok_utf8("x", ctrl, alt)
     fn multiple_mappings_for_same_source_preserve_order() {
         let router = router(r#"
 @version 1
-tok_key(f1) => tok_utf8("a")
-tok_key(f1) => tok_utf8("b")
-tok_key(f1) => act_shell("c")
-tok_key(f1) => tok_utf8("d")
+key(f1) => send_key('a')
+key(f1) => send_key('b')
+key(f1) => sh("c")
+key(f1) => send_key('d')
 "#);
-        let result = router.fire(&key_source(Key::Function(1), Mods::EMPTY)).unwrap();
+
+        let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
@@ -344,7 +420,7 @@ tok_key(f1) => tok_utf8("d")
                 RouteEffect::Token(Token::press_utf8('a', Mods::EMPTY)),
                 RouteEffect::Token(Token::press_utf8('b', Mods::EMPTY)),
                 RouteEffect::Action(Action::Command(CommandSpec::Shell {
-                    command: "c".to_owned()
+                    command: "c".to_owned(),
                 })),
                 RouteEffect::Token(Token::press_utf8('d', Mods::EMPTY)),
             ],
@@ -357,18 +433,20 @@ tok_key(f1) => tok_utf8("d")
 @version 1
 define group "reload"
 
-tok_key(f5) => group("reload")
-group("reload") => tok_utf8("r")
-group("reload") => act_shell("reload")
+key(f5) => group("reload")
+group("reload") => send_key('r')
+group("reload") => sh("reload")
 "#);
-        let result = router.fire(&key_source(Key::Function(5), Mods::EMPTY)).unwrap();
+
+        let result = fire_key(&router, Key::Function(5), Mods::EMPTY);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
             vec![
                 RouteEffect::Token(Token::press_utf8('r', Mods::EMPTY)),
                 RouteEffect::Action(Action::Command(CommandSpec::Shell {
-                    command: "reload".to_owned()
+                    command: "reload".to_owned(),
                 })),
             ],
         );
@@ -382,17 +460,19 @@ define group "a"
 define group "b"
 define group "c"
 
-tok_key(f1) => group("a")
-group("a") => tok_utf8("a")
+key(f1) => group("a")
+group("a") => send_key('a')
 group("a") => group("b")
-group("a") => tok_utf8("d")
+group("a") => send_key('d')
 
-group("b") => tok_utf8("b")
+group("b") => send_key('b')
 group("b") => group("c")
 
-group("c") => tok_utf8("c")
+group("c") => send_key('c')
 "#);
-        let result = router.fire(&key_source(Key::Function(1), Mods::EMPTY)).unwrap();
+
+        let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
@@ -409,39 +489,259 @@ group("c") => tok_utf8("c")
     fn produced_tokens_do_not_map() {
         let router = router(r#"
 @version 1
-tok_key(f1) => tok_utf8("x")
-tok_utf8("x") => act_shell("should run only for external x")
+key(f1) => send_key('x')
+key('x'~'X') => sh("should run only for external x")
 "#);
-        let result = router.fire(&key_source(Key::Function(1), Mods::EMPTY)).unwrap();
+
+        let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
             vec![RouteEffect::Token(Token::press_utf8('x', Mods::EMPTY))],
         );
 
-        let result = router.fire(&utf8_source('x', Mods::EMPTY)).unwrap();
+        let result = fire_utf8(&router, 'x', Mods::EMPTY);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
             vec![RouteEffect::Action(Action::Command(CommandSpec::Shell {
-                command: "should run only for external x".to_owned()
+                command: "should run only for external x".to_owned(),
             }))],
         );
+    }
+
+    #[test]
+    fn char_pair_matches_unshifted_and_shifted_sides_using_logical_mods() {
+        let router = router(r#"
+@version 1
+key('x'~'X') => send_key('u')
+key('x'~'X', shift) => send_key('s')
+"#);
+
+        let result = fire_utf8(&router, 'x', Mods::EMPTY);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::press_utf8('u', Mods::EMPTY))],
+        );
+
+        let result = fire_utf8(&router, 'X', Mods::EMPTY);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::press_utf8('s', Mods::EMPTY))],
+        );
+    }
+
+    #[test]
+    fn char_pair_shift_side_matches_even_when_shift_modifier_is_reported() {
+        let router = router(r#"
+@version 1
+key('x'~'X', shift) => send_key('s')
+"#);
+
+        let result = fire_utf8(&router, 'X', Mods::SHIFT);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::press_utf8('s', Mods::EMPTY))],
+        );
+    }
+
+    #[test]
+    fn same_char_pair_uses_actual_mods_for_logical_mods() {
+        let router = router(r#"
+@version 1
+key(' '~' ') => send_key('u')
+key(' '~' ', shift) => send_key('s')
+"#);
+
+        let result = fire_utf8(&router, ' ', Mods::EMPTY);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::press_utf8('u', Mods::EMPTY))],
+        );
+
+        let result = fire_utf8(&router, ' ', Mods::SHIFT);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::press_utf8('s', Mods::EMPTY))],
+        );
+    }
+
+    #[test]
+    fn named_key_missing_mod_pattern_defaults_to_none() {
+        let router = router(r#"
+@version 1
+key(f1) => send_key('x')
+"#);
+
+        assert!(fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
+        assert!(!fire_key(&router, Key::Function(1), Mods::SHIFT).matched);
+        assert!(!fire_key(&router, Key::Function(1), Mods::CTRL).matched);
+    }
+
+    #[test]
+    fn named_key_mod_pattern_any_matches_all_mod_masks() {
+        let router = router(r#"
+@version 1
+key(f1, any) => send_key('x')
+"#);
+        for mods in [
+            Mods::EMPTY,
+            Mods::SHIFT,
+            Mods::CTRL,
+            Mods::ALT,
+            Mods::CTRL | Mods::ALT,
+            Mods::SHIFT | Mods::CTRL | Mods::ALT,
+            Mods::SUPER | Mods::META,
+        ] {
+            assert!(fire_key(&router, Key::Function(1), mods).matched, "mods {mods:?} did not match");
+        }
+    }
+
+    #[test]
+    fn named_key_mod_pattern_exact_mask_rejects_subset_and_superset() {
+        let router = router(r#"
+@version 1
+key(f1, ctrl, alt) => send_key('x')
+"#);
+
+        assert!(!fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
+        assert!(!fire_key(&router, Key::Function(1), Mods::CTRL).matched);
+        assert!(!fire_key(&router, Key::Function(1), Mods::ALT).matched);
+        assert!(!fire_key(&router, Key::Function(1), Mods::CTRL | Mods::ALT | Mods::SHIFT).matched);
+
+        assert!(fire_key(&router, Key::Function(1), Mods::CTRL | Mods::ALT).matched);
+    }
+
+    #[test]
+    fn text_pair_default_none_matches_unshifted_logical_side_only() {
+        let router = router(r#"
+@version 1
+key('x'~'X') => send_key('u')
+"#);
+
+        assert!(fire_utf8(&router, 'x', Mods::EMPTY).matched);
+
+        // shift on actual mods is cleared when the matched char is the unshifted one
+        assert!(fire_utf8(&router, 'x', Mods::SHIFT).matched);
+
+        assert!(!fire_utf8(&router, 'X', Mods::EMPTY).matched);
+        assert!(!fire_utf8(&router, 'X', Mods::SHIFT).matched);
+        assert!(!fire_utf8(&router, 'x', Mods::CTRL).matched);
+    }
+
+    #[test]
+    fn text_pair_shift_pattern_matches_shifted_logical_side() {
+        let router = router(r#"
+@version 1
+key('x'~'X', shift) => send_key('s')
+"#);
+
+        assert!(!fire_utf8(&router, 'x', Mods::EMPTY).matched);
+        assert!(!fire_utf8(&router, 'x', Mods::SHIFT).matched);
+
+        // shifted side implies logical shift mod even when there's no actual shift mod
+        assert!(fire_utf8(&router, 'X', Mods::EMPTY).matched);
+        assert!(fire_utf8(&router, 'X', Mods::SHIFT).matched);
+    }
+
+    #[test]
+    fn text_pair_ctrl_pattern_uses_logical_mods() {
+        let router = router(r#"
+@version 1
+key('x'~'X', ctrl) => send_key('c')
+"#);
+
+        assert!(fire_utf8(&router, 'x', Mods::CTRL).matched);
+
+        // actual shift mod is cleared for the unshifted side before matching
+        assert!(fire_utf8(&router, 'x', Mods::CTRL | Mods::SHIFT).matched);
+
+        assert!(!fire_utf8(&router, 'X', Mods::CTRL).matched);
+        assert!(!fire_utf8(&router, 'X', Mods::CTRL | Mods::SHIFT).matched);
+        assert!(!fire_utf8(&router, 'x', Mods::ALT).matched);
+    }
+
+    #[test]
+    fn text_pair_ctrl_shift_pattern_matches_shifted_side_with_ctrl() {
+        let router = router(r#"
+@version 1
+key('x'~'X', ctrl, shift) => send_key('s')
+"#);
+
+        assert!(!fire_utf8(&router, 'x', Mods::CTRL).matched);
+        assert!(!fire_utf8(&router, 'x', Mods::CTRL | Mods::SHIFT).matched);
+
+        assert!(fire_utf8(&router, 'X', Mods::CTRL).matched);
+        assert!(fire_utf8(&router, 'X', Mods::CTRL | Mods::SHIFT).matched);
+
+        assert!(!fire_utf8(&router, 'X', Mods::ALT).matched);
+        assert!(!fire_utf8(&router, 'X', Mods::CTRL | Mods::ALT).matched);
+    }
+
+    #[test]
+    fn same_char_text_pair_does_not_infer_shift_from_character() {
+        let router = router(r#"
+@version 1
+key(' '~' ') => send_key('u')
+key(' '~' ', shift) => send_key('s')
+"#);
+
+        let result = fire_utf8(&router, ' ', Mods::EMPTY);
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::press_utf8('u', Mods::EMPTY))],
+        );
+
+        let result = fire_utf8(&router, ' ', Mods::SHIFT);
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::press_utf8('s', Mods::EMPTY))],
+        );
+    }
+
+    #[test]
+    fn same_char_text_pair_any_matches_with_or_without_reported_shift() {
+        let router = router(r#"
+@version 1
+key(' '~' ', any) => send_key('x')
+"#);
+
+        assert!(fire_utf8(&router, ' ', Mods::EMPTY).matched);
+        assert!(fire_utf8(&router, ' ', Mods::SHIFT).matched);
+        assert!(fire_utf8(&router, ' ', Mods::CTRL).matched);
+        assert!(fire_utf8(&router, ' ', Mods::CTRL | Mods::SHIFT).matched);
     }
 
     #[test]
     fn token_to_token_preserves_press_repeat_release() {
         let router = router(r#"
 @version 1
-tok_utf8("x") => tok_utf8("y")
+key('x'~'X') => send_key('y')
 "#);
 
         for kind in [KeyEventKind::Press, KeyEventKind::Repeat, KeyEventKind::Release] {
-            let result = router.fire(&Source::Token(Token::Utf8 {
+            let token = Token::Utf8 {
                 ch: 'x',
                 mods: Mods::EMPTY,
                 kind,
-            })).unwrap();
+            };
+
+            let result = fire_token(&router, &token);
+
             assert!(result.matched);
             assert_eq!(
                 result.effects,
@@ -460,16 +760,19 @@ tok_utf8("x") => tok_utf8("y")
 @version 1
 define group "g"
 
-tok_utf8("x") => group("g")
-group("g") => tok_utf8("y")
+key('x'~'X') => group("g")
+group("g") => send_key('y')
 "#);
 
         for kind in [KeyEventKind::Press, KeyEventKind::Repeat] {
-            let result = router.fire(&Source::Token(Token::Utf8 {
+            let token = Token::Utf8 {
                 ch: 'x',
                 mods: Mods::EMPTY,
                 kind,
-            })).unwrap();
+            };
+
+            let result = fire_token(&router, &token);
+
             assert!(result.matched);
             assert_eq!(
                 result.effects,
@@ -477,11 +780,14 @@ group("g") => tok_utf8("y")
             );
         }
 
-        let result = router.fire(&Source::Token(Token::Utf8 {
+        let token = Token::Utf8 {
             ch: 'x',
             mods: Mods::EMPTY,
             kind: KeyEventKind::Release,
-        })).unwrap();
+        };
+
+        let result = fire_token(&router, &token);
+
         assert!(result.matched);
         assert!(result.effects.is_empty());
     }
@@ -490,29 +796,35 @@ group("g") => tok_utf8("y")
     fn token_to_action_fires_on_press_and_repeat_not_release() {
         let router = router(r#"
 @version 1
-tok_utf8("x") => act_shell("x")
+key('x'~'X') => sh("x")
 "#);
 
         for kind in [KeyEventKind::Press, KeyEventKind::Repeat] {
-            let result = router.fire(&Source::Token(Token::Utf8 {
+            let token = Token::Utf8 {
                 ch: 'x',
                 mods: Mods::EMPTY,
                 kind,
-            })).unwrap();
+            };
+
+            let result = fire_token(&router, &token);
+
             assert!(result.matched);
             assert_eq!(
                 result.effects,
                 vec![RouteEffect::Action(Action::Command(CommandSpec::Shell {
-                    command: "x".to_owned()
+                    command: "x".to_owned(),
                 }))],
             );
         }
 
-        let result = router.fire(&Source::Token(Token::Utf8 {
+        let token = Token::Utf8 {
             ch: 'x',
             mods: Mods::EMPTY,
             kind: KeyEventKind::Release,
-        })).unwrap();
+        };
+
+        let result = fire_token(&router, &token);
+
         assert!(result.matched);
         assert!(result.effects.is_empty());
     }
@@ -521,13 +833,17 @@ tok_utf8("x") => act_shell("x")
     fn unmatched_release_is_not_matched() {
         let router = router(r#"
 @version 1
-tok_utf8("x") => tok_utf8("y")
+key('x'~'X') => send_key('y')
 "#);
-        let result = router.fire(&Source::Token(Token::Utf8 {
+
+        let token = Token::Utf8 {
             ch: 'z',
             mods: Mods::EMPTY,
             kind: KeyEventKind::Release,
-        })).unwrap();
+        };
+
+        let result = fire_token(&router, &token);
+
         assert!(!result.matched);
         assert!(result.effects.is_empty());
     }
@@ -536,14 +852,17 @@ tok_utf8("x") => tok_utf8("y")
     fn normal_token_target_does_not_copy_modifiers() {
         let router = router(r#"
 @version 1
-tok_utf8("x", ctrl) => tok_utf8("y")
+key('x'~'X', ctrl) => send_key('y')
 "#);
 
-        let result = router.fire(&Source::Token(Token::Utf8 {
+        let token = Token::Utf8 {
             ch: 'x',
             mods: Mods::CTRL,
             kind: KeyEventKind::Repeat,
-        })).unwrap();
+        };
+
+        let result = fire_token(&router, &token);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
@@ -556,17 +875,20 @@ tok_utf8("x", ctrl) => tok_utf8("y")
     }
 
     #[test]
-    fn inherit_token_copies_modifiers_and_kind() {
+    fn inherit_named_key_copies_actual_modifiers_and_kind() {
         let router = router(r#"
 @version 1
-tok_utf8("x", ctrl, alt) => inherit_tok_key(enter)
+key('x'~'X', ctrl, alt) => inherit_key(enter)
 "#);
 
-        let result = router.fire(&Source::Token(Token::Utf8 {
+        let token = Token::Utf8 {
             ch: 'x',
             mods: Mods::CTRL | Mods::ALT,
             kind: KeyEventKind::Release,
-        })).unwrap();
+        };
+
+        let result = fire_token(&router, &token);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
@@ -579,17 +901,71 @@ tok_utf8("x", ctrl, alt) => inherit_tok_key(enter)
     }
 
     #[test]
+    fn inherit_char_pair_chooses_side_from_logical_shift_and_preserves_actual_mods() {
+        let router = router(r#"
+@version 1
+key('x'~'X', any) => inherit_key('w'~'W')
+"#);
+
+        let result = fire_utf8(&router, 'x', Mods::CTRL);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::Utf8 {
+                ch: 'w',
+                mods: Mods::CTRL,
+                kind: KeyEventKind::Press,
+            })],
+        );
+
+        let result = fire_utf8(&router, 'X', Mods::CTRL);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::Utf8 {
+                ch: 'W',
+                mods: Mods::CTRL,
+                kind: KeyEventKind::Press,
+            })],
+        );
+    }
+
+    #[test]
+    fn inherit_same_char_pair_preserves_shift_when_terminal_reported_it() {
+        let router = router(r#"
+@version 1
+key(' '~' ', any) => inherit_key(' '~' ')
+"#);
+
+        let result = fire_utf8(&router, ' ', Mods::SHIFT);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Token(Token::Utf8 {
+                ch: ' ',
+                mods: Mods::SHIFT,
+                kind: KeyEventKind::Press,
+            })],
+        );
+    }
+
+    #[test]
     fn same_group_can_be_used_twice_if_not_recursive() {
         let router = router(r#"
 @version 1
 define group "common"
 
-tok_key(f1) => group("common")
-tok_key(f1) => group("common")
+key(f1) => group("common")
+key(f1) => group("common")
 
-group("common") => tok_utf8("x")
+group("common") => send_key('x')
 "#);
-        let result = router.fire(&key_source(Key::Function(1), Mods::EMPTY)).unwrap();
+
+        let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
@@ -609,14 +985,16 @@ define group "b"
 define group "c"
 define group "d"
 
-tok_key(f1) => group("a")
+key(f1) => group("a")
 group("a") => group("b")
 group("a") => group("c")
 group("b") => group("d")
 group("c") => group("d")
-group("d") => tok_utf8("x")
+group("d") => send_key('x')
 "#);
-        let result = router.fire(&key_source(Key::Function(1), Mods::EMPTY)).unwrap();
+
+        let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,
@@ -634,11 +1012,12 @@ group("d") => tok_utf8("x")
 define group "a"
 define group "b"
 
-tok_key(f1) => group("a")
+key(f1) => group("a")
 group("a") => group("b")
 group("b") => group("a")
 "#);
-        let err = router.fire(&key_source(Key::Function(1), Mods::EMPTY)).unwrap_err();
+
+        let err = router.fire(RouteInput::Token(&Token::press_key(Key::Function(1), Mods::EMPTY))).unwrap_err();
         assert!(matches!(err, RouteError::GroupCycle { .. }));
     }
 
@@ -650,18 +1029,19 @@ define group "a"
 define group "b"
 define group "c"
 
-tok_key(f1) => group("a")
+key(f1) => group("a")
 group("a") => group("b")
 group("b") => group("c")
 group("c") => group("b")
 "#);
-        let err = router.fire(&key_source(Key::Function(1), Mods::EMPTY)).unwrap_err();
+
+        let err = router.fire(RouteInput::Token(&Token::press_key(Key::Function(1), Mods::EMPTY))).unwrap_err();
         match err {
             RouteError::GroupCycle { stack, repeated } => {
                 assert!(!stack.is_empty());
                 assert!(stack.contains(&repeated));
             }
-            _ => panic!("expected route error to be GroupCycle"),
+            _ => panic!("expected group cycle"),
         }
     }
 
@@ -672,12 +1052,13 @@ group("c") => group("b")
 define group "a"
 define group "b"
 
-tok_key(f1) => group("a")
-group("a") => tok_utf8("x")
+key(f1) => group("a")
+group("a") => send_key('x')
 group("a") => group("b")
 group("b") => group("a")
 "#);
-        let err = router.fire(&key_source(Key::Function(1), Mods::EMPTY)).unwrap_err();
+
+        let err = router.fire(RouteInput::Token(&Token::press_key(Key::Function(1), Mods::EMPTY))).unwrap_err();
         assert!(matches!(err, RouteError::GroupCycle { .. }));
     }
 
@@ -688,14 +1069,17 @@ group("b") => group("a")
 define group "a"
 define group "b"
 
-tok_key(f1) => group("a")
+key(f1) => group("a")
 group("a") => group("b")
 group("b") => group("a")
 
-tok_key(f2) => tok_utf8("x")
+key(f2) => send_key('x')
 "#);
-        assert!(router.fire(&key_source(Key::Function(1), Mods::EMPTY)).is_err());
-        let result = router.fire(&key_source(Key::Function(2), Mods::EMPTY)).unwrap();
+
+        assert!(router.fire(RouteInput::Token(&Token::press_key(Key::Function(1), Mods::EMPTY))).is_err());
+
+        let result = fire_key(&router, Key::Function(2), Mods::EMPTY);
+
         assert!(result.matched);
         assert_eq!(
             result.effects,

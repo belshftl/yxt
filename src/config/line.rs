@@ -39,39 +39,63 @@ pub enum Literal {
     Bool(bool),
     Int(i32),
     String(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Arg {
-    String(String),
-    Int(i32),
-    Bool(bool),
-    Ident(String),
-    Call(Expr),
+    Char(char),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
-    Call {
+    Ident {
         name: String,
-        args: Vec<Arg>,
         span: Span,
     },
+    Literal {
+        value: Literal,
+        span: Span,
+    },
+    Call {
+        name: String,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    Pair {
+        unshifted: Box<Expr>,
+        shifted: Box<Expr>,
+        span: Span,
+    },
+}
+
+impl Expr {
+    pub fn span(&self) -> Span {
+        match self {
+            Expr::Ident { span, .. }
+            | Expr::Literal { span, .. }
+            | Expr::Call { span, .. }
+            | Expr::Pair { span, .. } => *span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MappingAttr {
+    pub name: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     Directive {
         name: String,
-        args: Vec<Arg>,
+        args: Vec<Expr>,
         span: Span,
     },
     Definition {
         kind: String,
-        args: Vec<Arg>,
+        args: Vec<Expr>,
         span: Span,
     },
     Mapping {
+        attrs: Vec<MappingAttr>,
         lhs: Expr,
         op: MappingOp,
         rhs: Expr,
@@ -106,8 +130,23 @@ pub enum ErrorKind {
     #[error("unterminated string")]
     UnterminatedString,
 
+    #[error("unterminated character literal")]
+    UnterminatedChar,
+
+    #[error("empty character literal")]
+    EmptyChar,
+
+    #[error("character literal contains more than one character")]
+    CharTooLong,
+
     #[error("invalid escape sequence \\{}", .0.escape_default())]
     InvalidEscape(char),
+
+    #[error("invalid hex escape")]
+    InvalidHexEscape,
+
+    #[error("invalid unicode escape")]
+    InvalidUnicodeEscape,
 
     #[error("invalid identifier")]
     InvalidIdentifier,
@@ -148,10 +187,11 @@ pub fn parse_line(line: &str, ctx: LineCtx) -> Result<Option<Stmt>, ParseError> 
         debug_assert!(pos >= base && pos < base + s.len());
         let rel = pos - base;
 
-        let lhs = parse_expr_full(&s[..rel], ctx, base)?;
+        let (attrs, lhs) = parse_mapping_lhs_full(&s[..rel], ctx, base)?;
         let rhs = parse_expr_full(&s[rel + 2..], ctx, pos + 2)?;
 
         Ok(Some(Stmt::Mapping {
+            attrs,
             lhs,
             op,
             rhs,
@@ -199,6 +239,10 @@ impl<'a> Cursor<'a> {
 
     fn eof(&self) -> bool {
         self.pos >= self.s.len()
+    }
+
+    fn remaining(&self) -> &'a str {
+        &self.s[self.pos..]
     }
 
     fn peek_byte(&self) -> Option<u8> {
@@ -270,9 +314,123 @@ impl<'a> Cursor<'a> {
         Ok(&self.s[start..self.pos])
     }
 
+    fn parse_escape_after_backslash(
+        &mut self,
+        escape_pos: usize,
+        literal_start: usize,
+        unterminated: ErrorKind,
+    ) -> Result<char, ParseError> {
+        let Some(esc) = self.cons_byte() else {
+            return Err(ParseError {
+                kind: unterminated,
+                span: Span { ctx: self.ctx, start: self.base + literal_start, end: self.base + self.pos },
+            });
+        };
+
+        match esc {
+            b'\\' => Ok('\\'),
+            b'"' => Ok('"'),
+            b'\'' => Ok('\''),
+            b'n' => Ok('\n'),
+            b'r' => Ok('\r'),
+            b't' => Ok('\t'),
+            b'x' => {
+                let start = self.pos;
+
+                let Some(hi_ch) = self.cons_byte() else {
+                    return Err(ParseError {
+                        kind: ErrorKind::InvalidHexEscape,
+                        span: Span { ctx: self.ctx, start: self.base + escape_pos, end: self.base + self.pos },
+                    });
+                };
+                let Some(lo_ch) = self.cons_byte() else {
+                    return Err(ParseError {
+                        kind: ErrorKind::InvalidHexEscape,
+                        span: Span { ctx: self.ctx, start: self.base + escape_pos, end: self.base + self.pos },
+                    });
+                };
+                let Some(hi) = hex_value(hi_ch) else {
+                    return Err(ParseError {
+                        kind: ErrorKind::InvalidHexEscape,
+                        span: Span { ctx: self.ctx, start: self.base + start, end: self.base + start + 1 },
+                    });
+                };
+                let Some(lo) = hex_value(lo_ch) else {
+                    return Err(ParseError {
+                        kind: ErrorKind::InvalidHexEscape,
+                        span: Span { ctx: self.ctx, start: self.base + start + 1, end: self.base + start + 2 },
+                    });
+                };
+
+                Ok(char::from((hi << 4) | lo))
+            }
+            b'u' => {
+                let escape_body_start = self.pos;
+
+                if self.cons_byte() != Some(b'{') {
+                    return Err(ParseError {
+                        kind: ErrorKind::InvalidUnicodeEscape,
+                        span: Span { ctx: self.ctx, start: self.base + escape_pos, end: self.base + self.pos },
+                    });
+                }
+
+                let digits_start = self.pos;
+                let mut value = 0u32;
+                let mut digits = 0usize;
+
+                loop {
+                    let Some(b) = self.cons_byte() else {
+                        return Err(ParseError {
+                            kind: ErrorKind::InvalidUnicodeEscape,
+                            span: Span { ctx: self.ctx, start: self.base + escape_body_start, end: self.base + self.pos },
+                        });
+                    };
+
+                    if b == b'}' {
+                        break;
+                    }
+
+                    let Some(v) = hex_value(b) else {
+                        return Err(ParseError {
+                            kind: ErrorKind::InvalidUnicodeEscape,
+                            span: Span { ctx: self.ctx, start: self.base + self.pos - 1, end: self.base + self.pos },
+                        });
+                    };
+
+                    digits += 1;
+
+                    if digits > 6 {
+                        return Err(ParseError {
+                            kind: ErrorKind::InvalidUnicodeEscape,
+                            span: Span { ctx: self.ctx, start: self.base + digits_start, end: self.base + self.pos },
+                        });
+                    }
+
+                    value = (value << 4) | u32::from(v);
+                }
+
+                if digits == 0 {
+                    return Err(ParseError {
+                        kind: ErrorKind::InvalidUnicodeEscape,
+                        span: Span { ctx: self.ctx, start: self.base + digits_start, end: self.base + self.pos },
+                    });
+                }
+
+                char::from_u32(value).ok_or_else(|| ParseError {
+                    kind: ErrorKind::InvalidUnicodeEscape,
+                    span: Span { ctx: self.ctx, start: self.base + escape_body_start, end: self.base + self.pos },
+                })
+            }
+            _ => Err(ParseError {
+                kind: ErrorKind::InvalidEscape(esc as char),
+                span: Span { ctx: self.ctx, start: self.base + escape_pos, end: self.base + escape_pos + 1 },
+            }),
+        }
+    }
+
     fn parse_strlit(&mut self) -> Result<Cow<'a, str>, ParseError> {
         let quote_start = self.pos;
-        self.expect_byte(b'"', "'\"'")?;
+        self.expect_byte(b'"', "string literal")?;
 
         let content_start = self.pos;
         let mut tail_start = self.pos;
@@ -295,34 +453,19 @@ impl<'a> Cursor<'a> {
                     self.pos += 1;
 
                     let esc_pos = self.pos;
-                    let Some(esc) = self.cons_byte() else {
-                        return Err(ParseError {
-                            kind: ErrorKind::UnterminatedString,
-                            span: Span {
-                                ctx: self.ctx,
-                                start: self.base + quote_start,
-                                end: self.base + self.pos,
-                            },
-                        });
-                    };
+                    let ch = self.parse_escape_after_backslash(
+                        esc_pos,
+                        quote_start,
+                        ErrorKind::UnterminatedString,
+                    )?;
 
-                    match esc {
-                        b'\\' => out.push('\\'),
-                        b'"' => out.push('"'),
-                        _ => return Err(ParseError {
-                            kind: ErrorKind::InvalidEscape(esc as char),
-                            span: Span {
-                                ctx: self.ctx,
-                                start: self.base + esc_pos,
-                                end: self.base + esc_pos + 1,
-                            },
-                        })
-                    }
+                    out.push(ch);
                     tail_start = self.pos;
                 }
-                _ => self.pos += 1
+                _ => self.pos += 1,
             }
         }
+
         Err(ParseError {
             kind: ErrorKind::UnterminatedString,
             span: Span {
@@ -333,48 +476,148 @@ impl<'a> Cursor<'a> {
         })
     }
 
-    fn parse_arg(&mut self) -> Result<Arg, ParseError> {
-        self.skip_ws();
+    fn parse_charlit(&mut self) -> Result<char, ParseError> {
+        let quote_start = self.pos;
+        self.expect_byte(b'\'', "char literal")?;
+
+        let ch = match self.peek_byte() {
+            None => {
+                return Err(ParseError {
+                    kind: ErrorKind::UnterminatedChar,
+                    span: Span { ctx: self.ctx, start: self.base + quote_start, end: self.base + self.pos },
+                });
+            }
+            Some(b'\'') => {
+                return Err(ParseError {
+                    kind: ErrorKind::EmptyChar,
+                    span: Span {
+                        ctx: self.ctx,
+                        start: self.base + quote_start,
+                        end: self.base + self.pos + 1,
+                    },
+                });
+            }
+            Some(b'\\') => {
+                self.pos += 1;
+                let esc_pos = self.pos;
+                self.parse_escape_after_backslash(esc_pos, quote_start, ErrorKind::UnterminatedChar)?
+            }
+            Some(_) => {
+                let Some(ch) = self.remaining().chars().next() else {
+                    unreachable!();
+                };
+                self.pos += ch.len_utf8();
+                ch
+            }
+        };
 
         match self.peek_byte() {
-            Some(b'"') => self.parse_strlit().map(Cow::into_owned).map(Arg::String),
+            Some(b'\'') => {
+                self.pos += 1;
+                Ok(ch)
+            }
+            Some(_) => Err(ParseError {
+                kind: ErrorKind::CharTooLong,
+                span: Span { ctx: self.ctx, start: self.base + quote_start, end: self.base + self.pos },
+            }),
+            None => Err(ParseError {
+                kind: ErrorKind::UnterminatedChar,
+                span: Span { ctx: self.ctx, start: self.base + quote_start, end: self.base + self.pos },
+            }),
+        }
+    }
+
+    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        self.skip_ws();
+        let lhs = self.parse_expr_atom()?;
+        let after_lhs = self.pos;
+        self.skip_ws();
+
+        if self.peek_byte() != Some(b'~') {
+            self.pos = after_lhs;
+            return Ok(lhs);
+        }
+        self.pos += 1;
+        self.skip_ws();
+
+        let rhs = self.parse_expr_atom()?;
+        let lhs_span = lhs.span();
+        let rhs_span = rhs.span();
+        Ok(Expr::Pair {
+            unshifted: Box::new(lhs),
+            shifted: Box::new(rhs),
+            span: Span { ctx: self.ctx, start: lhs_span.start, end: rhs_span.end },
+        })
+    }
+
+    fn parse_expr_atom(&mut self) -> Result<Expr, ParseError> {
+        self.skip_ws();
+        match self.peek_byte() {
+            Some(b'"') => {
+                let start = self.pos;
+                let value = self.parse_strlit()?.into_owned();
+                Ok(Expr::Literal {
+                    value: Literal::String(value),
+                    span: self.span_from(start),
+                })
+            }
+            Some(b'\'') => {
+                let start = self.pos;
+                let value = self.parse_charlit()?;
+                Ok(Expr::Literal {
+                    value: Literal::Char(value),
+                    span: self.span_from(start),
+                })
+            }
             Some(b) if is_ident_start(b) => {
-                let saved = self.pos;
-                let ident = self.parse_ident()?;
+                let start = self.pos;
+                let name = self.parse_ident()?.to_owned();
+                let after_ident = self.pos;
+
                 self.skip_ws();
                 if self.peek_byte() == Some(b'(') {
-                    self.pos = saved;
-                    return self.parse_call_expr().map(Arg::Call);
+                    let args = self.parse_call_args_after_open_paren()?;
+                    return Ok(Expr::Call { name, args, span: self.span_from(start) });
                 }
-                match ident {
-                    "true" => Ok(Arg::Bool(true)),
-                    "false" => Ok(Arg::Bool(false)),
-                    _ => Ok(Arg::Ident(ident.to_owned())),
+                self.pos = after_ident;
+
+                match name.as_str() {
+                    "true" => Ok(Expr::Literal {
+                        value: Literal::Bool(true),
+                        span: self.span_from(start),
+                    }),
+                    "false" => Ok(Expr::Literal {
+                        value: Literal::Bool(false),
+                        span: self.span_from(start),
+                    }),
+                    _ => Ok(Expr::Ident {
+                        name,
+                        span: self.span_from(start),
+                    }),
                 }
             }
             Some(b'+') | Some(b'-') | Some(b'0'..=b'9') => {
                 let start = self.pos;
                 while let Some(b) = self.peek_byte() {
-                    if is_arg_delim(b) {
+                    if is_expr_delim(b) {
                         break;
                     }
                     self.pos += 1;
                 }
+
                 let text = &self.s[start..self.pos];
                 let span = self.span_from(start);
-                parse_i32(text, span).map(Arg::Int)
+                let value = parse_i32(text, span)?;
+                Ok(Expr::Literal {
+                    value: Literal::Int(value),
+                    span,
+                })
             }
-            _ => Err(self.err_here(ErrorKind::Expected("argument")))
+            _ => Err(self.err_here(ErrorKind::Expected("expression"))),
         }
     }
 
-    fn parse_call_expr(&mut self) -> Result<Expr, ParseError> {
-        self.skip_ws();
-
-        let start = self.pos;
-        let name = self.parse_ident()?;
-
-        self.skip_ws();
+    fn parse_call_args_after_open_paren(&mut self) -> Result<Vec<Expr>, ParseError> {
         self.expect_byte(b'(', "'('")?;
 
         let mut args = Vec::new();
@@ -385,13 +628,11 @@ impl<'a> Cursor<'a> {
                 break;
             }
 
-            args.push(self.parse_arg()?);
+            args.push(self.parse_expr()?);
 
             self.skip_ws();
             match self.peek_byte() {
-                Some(b',') => {
-                    self.cons_byte();
-                }
+                Some(b',') => _ = self.cons_byte(),
                 Some(b')') => {
                     self.cons_byte();
                     break;
@@ -400,8 +641,21 @@ impl<'a> Cursor<'a> {
             }
         }
 
+        Ok(args)
+    }
+
+    fn parse_call_expr(&mut self) -> Result<Expr, ParseError> {
+        self.skip_ws();
+
+        let start = self.pos;
+        let name = self.parse_ident()?.to_owned();
+
+        self.skip_ws();
+
+        let args = self.parse_call_args_after_open_paren()?;
+
         Ok(Expr::Call {
-            name: name.to_owned(),
+            name,
             args,
             span: self.span_from(start),
         })
@@ -419,8 +673,8 @@ struct TopLevelBytes<'a> {
     ctx: LineCtx,
     base: usize,
     pos: usize,
-    in_strlit: bool,
-    strlit_start: usize,
+    quote: Option<u8>,
+    quote_start: usize,
     done: bool,
 }
 
@@ -431,19 +685,24 @@ impl<'a> TopLevelBytes<'a> {
             ctx,
             base,
             pos: 0,
-            in_strlit: false,
-            strlit_start: 0,
+            quote: None,
+            quote_start: 0,
             done: false,
         }
     }
 
     fn err_unterminated(&self) -> ParseError {
+        let kind = match self.quote {
+            Some(b'"') => ErrorKind::UnterminatedString,
+            Some(b'\'') => ErrorKind::UnterminatedChar,
+            _ => panic!("self.quote not set or bad value"),
+        };
         ParseError {
-            kind: ErrorKind::UnterminatedString,
+            kind,
             span: Span {
                 ctx: self.ctx,
-                start: self.base + self.strlit_start,
-                end: self.base + self.s.len()
+                start: self.base + self.quote_start,
+                end: self.base + self.s.len(),
             },
         }
     }
@@ -461,10 +720,10 @@ impl<'a> Iterator for TopLevelBytes<'a> {
         while self.pos < self.s.len() {
             let b = bytes[self.pos];
 
-            if self.in_strlit {
+            if let Some(quote) = self.quote {
                 match b {
-                    b'"' => {
-                        self.in_strlit = false;
+                    b if b == quote => {
+                        self.quote = None;
                         self.pos += 1;
                     }
                     b'\\' => {
@@ -475,13 +734,13 @@ impl<'a> Iterator for TopLevelBytes<'a> {
                         }
                         self.pos += 1;
                     }
-                    _ => self.pos += 1
+                    _ => self.pos += 1,
                 }
             } else {
                 match b {
-                    b'"' => {
-                        self.in_strlit = true;
-                        self.strlit_start = self.pos;
+                    b'"' | b'\'' => {
+                        self.quote = Some(b);
+                        self.quote_start = self.pos;
                         self.pos += 1;
                     }
                     _ => {
@@ -497,7 +756,7 @@ impl<'a> Iterator for TopLevelBytes<'a> {
         }
 
         self.done = true;
-        if self.in_strlit {
+        if self.quote.is_some() {
             Some(Err(self.err_unterminated()))
         } else {
             None
@@ -509,10 +768,14 @@ impl<'a> Iterator for TopLevelBytes<'a> {
 struct LineStructure {
     content_end: usize,
     mapping_op: Option<(usize, MappingOp)>,
-    assignment_eq: Option<usize>
+    assignment_eq: Option<usize>,
 }
 
-fn matches_toplv_byte(item: Option<&Result<TopLevelByte, ParseError>>, pos: usize, byte: u8,) -> Result<bool, ParseError> {
+fn matches_toplv_byte(
+    item: Option<&Result<TopLevelByte, ParseError>>,
+    pos: usize,
+    byte: u8,
+) -> Result<bool, ParseError> {
     match item {
         Some(Ok(item)) => Ok(item.pos == pos && item.byte == byte),
         Some(Err(e)) => Err(e.clone()),
@@ -526,21 +789,25 @@ fn scan_line_structure(s: &str, ctx: LineCtx, base: usize) -> Result<LineStructu
     let mut content_end = s.len();
     let mut mapping_op = None;
     let mut assignment_eq = None;
+    let mut paren_depth = 0usize;
 
     while let Some(item) = it.next() {
         let item = item?;
+
         match item.byte {
-            b'#' => {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'#' if paren_depth == 0 => {
                 content_end = item.pos;
                 break;
             }
-            b'=' => {
+            b'=' if paren_depth == 0 => {
                 if matches_toplv_byte(it.peek(), item.pos + 1, b'>')? {
-                    _ = it.next().transpose()?; // swallow '>'
+                    _ = it.next().transpose()?;
                     if mapping_op.replace((item.pos, MappingOp::Right)).is_some() {
                         return Err(ParseError {
                             kind: ErrorKind::MultipleMappingOperators,
-                            span: Span { ctx, start: item.pos, end: item.pos + 2 },
+                            span: Span { ctx, start: base + item.pos, end: base + item.pos + 2 },
                         });
                     }
                     continue;
@@ -549,13 +816,14 @@ fn scan_line_structure(s: &str, ctx: LineCtx, base: usize) -> Result<LineStructu
                     assignment_eq = Some(item.pos);
                 }
             }
-            b'<' => {
+            b'<' if paren_depth == 0 => {
                 if matches_toplv_byte(it.peek(), item.pos + 1, b'=')? {
-                    _ = it.next().transpose()?; // swallow '='
+                    _ = it.next().transpose()?;
+
                     if mapping_op.replace((item.pos, MappingOp::Left)).is_some() {
                         return Err(ParseError {
                             kind: ErrorKind::MultipleMappingOperators,
-                            span: Span { ctx, start: item.pos, end: item.pos + 2 },
+                            span: Span { ctx, start: base + item.pos, end: base + item.pos + 2 },
                         });
                     }
                     continue;
@@ -577,7 +845,7 @@ fn parse_directive(s: &str, ctx: LineCtx, base: usize) -> Result<Stmt, ParseErro
         return Err(c.err_here(ErrorKind::Expected("whitespace")));
     }
 
-    let args = parse_ws_args(&mut c)?;
+    let args = parse_ws_exprs(&mut c)?;
     Ok(Stmt::Directive {
         name: name.to_owned(),
         args,
@@ -592,14 +860,14 @@ fn parse_definition(s: &str, ctx: LineCtx, base: usize) -> Result<Stmt, ParseErr
     if c.eof() || !is_ascii_ws(c.peek_byte().unwrap()) {
         return Err(c.err_here(ErrorKind::Expected("whitespace")));
     }
-    c.skip_ws();
 
+    c.skip_ws();
     let kind = c.parse_ident()?;
     if !c.eof() && !is_ascii_ws(c.peek_byte().unwrap()) {
         return Err(c.err_here(ErrorKind::Expected("whitespace")));
     }
 
-    let args = parse_ws_args(&mut c)?;
+    let args = parse_ws_exprs(&mut c)?;
     Ok(Stmt::Definition {
         kind: kind.to_owned(),
         args,
@@ -607,7 +875,7 @@ fn parse_definition(s: &str, ctx: LineCtx, base: usize) -> Result<Stmt, ParseErr
     })
 }
 
-fn parse_ws_args(c: &mut Cursor<'_>) -> Result<Vec<Arg>, ParseError> {
+fn parse_ws_exprs(c: &mut Cursor<'_>) -> Result<Vec<Expr>, ParseError> {
     let mut args = Vec::new();
     loop {
         c.skip_ws();
@@ -615,12 +883,76 @@ fn parse_ws_args(c: &mut Cursor<'_>) -> Result<Vec<Arg>, ParseError> {
             break;
         }
 
-        args.push(c.parse_arg()?);
+        args.push(c.parse_expr()?);
         if !c.eof() && !is_ascii_ws(c.peek_byte().unwrap()) {
             return Err(c.err_here(ErrorKind::Expected("whitespace")));
         }
     }
     Ok(args)
+}
+
+fn parse_mapping_lhs_full(
+    s: &str,
+    ctx: LineCtx,
+    base: usize,
+) -> Result<(Vec<MappingAttr>, Expr), ParseError> {
+    let (s, off) = trim_ascii_span(s);
+
+    if s.is_empty() {
+        return Err(ParseError {
+            kind: ErrorKind::Expected("expression"),
+            span: Span::at(ctx, base + off),
+        });
+    }
+
+    let mut c = Cursor::new(s, ctx, base + off);
+    let attrs = parse_mapping_attrs(&mut c)?;
+    let lhs = c.parse_expr()?;
+
+    c.skip_ws();
+    if !c.eof() {
+        return Err(c.err_here(ErrorKind::TrailingInput));
+    }
+
+    Ok((attrs, lhs))
+}
+
+fn parse_mapping_attrs(c: &mut Cursor<'_>) -> Result<Vec<MappingAttr>, ParseError> {
+    let mut attrs = Vec::new();
+
+    loop {
+        c.skip_ws();
+
+        let saved = c.pos;
+        let start = c.pos;
+
+        let Ok(name) = c.parse_ident() else {
+            c.pos = saved;
+            break;
+        };
+
+        if c.peek_byte() != Some(b'!') {
+            c.pos = saved;
+            break;
+        }
+
+        let name = name.to_owned();
+
+        c.pos += 1;
+        let args = if c.peek_byte() == Some(b'(') {
+            c.parse_call_args_after_open_paren()?
+        } else {
+            Vec::new()
+        };
+
+        attrs.push(MappingAttr {
+            name,
+            args,
+            span: c.span_from(start),
+        });
+    }
+
+    Ok(attrs)
 }
 
 fn parse_expr_full(s: &str, ctx: LineCtx, base: usize) -> Result<Expr, ParseError> {
@@ -634,12 +966,13 @@ fn parse_expr_full(s: &str, ctx: LineCtx, base: usize) -> Result<Expr, ParseErro
     }
 
     let mut c = Cursor::new(s, ctx, base + off);
-    let expr = c.parse_call_expr()?;
+    let expr = c.parse_expr()?;
 
     c.skip_ws();
     if !c.eof() {
         return Err(c.err_here(ErrorKind::TrailingInput));
     }
+
     Ok(expr)
 }
 
@@ -652,6 +985,7 @@ fn parse_literal_full(s: &str, ctx: LineCtx, base: usize) -> Result<Literal, Par
     }
 
     let mut c = Cursor::new(s, ctx, base);
+
     if c.peek_byte() == Some(b'"') {
         let v = c.parse_strlit()?;
         c.skip_ws();
@@ -659,6 +993,15 @@ fn parse_literal_full(s: &str, ctx: LineCtx, base: usize) -> Result<Literal, Par
             return Err(c.err_here(ErrorKind::TrailingInput));
         }
         return Ok(Literal::String(v.into_owned()));
+    }
+
+    if c.peek_byte() == Some(b'\'') {
+        let v = c.parse_charlit()?;
+        c.skip_ws();
+        if !c.eof() {
+            return Err(c.err_here(ErrorKind::TrailingInput));
+        }
+        return Ok(Literal::Char(v));
     }
 
     if s == "true" {
@@ -698,7 +1041,7 @@ fn parse_i32(s: &str, span: Span) -> Result<i32, ParseError> {
             s = &s[1..];
             true
         }
-        _ => false
+        _ => false,
     };
 
     if s.is_empty() {
@@ -716,7 +1059,7 @@ fn parse_i32(s: &str, span: Span) -> Result<i32, ParseError> {
         if rest.is_empty() {
             ("0", 10)
         } else {
-            if rest.as_bytes()[0] == b'0' || !rest.bytes().all(|b| matches!(b, b'0'..b'7')) {
+            if rest.as_bytes()[0] == b'0' || !rest.bytes().all(|b| matches!(b, b'0'..=b'7')) {
                 return Err(ParseError { kind: ErrorKind::InvalidInteger, span });
             }
             (s, 8)
@@ -732,6 +1075,7 @@ fn parse_i32(s: &str, span: Span) -> Result<i32, ParseError> {
         kind: ErrorKind::IntegerOutOfRange,
         span,
     })?;
+
     let v = if negative { -mag } else { mag };
     if v < i32::MIN as i64 || v > i32::MAX as i64 {
         return Err(ParseError { kind: ErrorKind::IntegerOutOfRange, span });
@@ -744,7 +1088,7 @@ fn strip_line_ending(s: &str, ctx: LineCtx) -> Result<&str, ParseError> {
         if pos + 1 != s.len() {
             return Err(ParseError {
                 kind: ErrorKind::TrailingInput,
-                span: Span { ctx, start: pos + 1, end: s.len() }
+                span: Span { ctx, start: pos + 1, end: s.len() },
             });
         }
 
@@ -752,33 +1096,6 @@ fn strip_line_ending(s: &str, ctx: LineCtx) -> Result<&str, ParseError> {
         return Ok(before_lf.strip_suffix('\r').unwrap_or(before_lf));
     }
     Ok(s)
-}
-
-fn strip_comment(line: &str, ctx: LineCtx) -> Result<&str, ParseError> {
-    let mut quote = false;
-    let mut bksl = false;
-    let mut last_quote = 0;
-
-    for (i, ch) in line.char_indices() {
-        if !bksl && ch == '"' {
-            last_quote = i;
-            quote = !quote;
-        } else if quote && !bksl && ch == '\\' {
-            bksl = true;
-            continue;
-        } else if !quote && ch == '#' {
-            return Ok(&line[..i]);
-        }
-        bksl = false;
-    }
-
-    if quote {
-        return Err(ParseError {
-            kind: ErrorKind::UnterminatedString,
-            span: Span { ctx, start: last_quote, end: line.len() },
-        });
-    }
-    Ok(line)
 }
 
 fn trim_ascii_span(s: &str) -> (&str, usize) {
@@ -801,6 +1118,15 @@ fn starts_with_keyword(s: &str, kw: &str) -> bool {
     rest.is_empty() || rest.as_bytes().first().is_some_and(|b| is_ascii_ws(*b))
 }
 
+fn hex_value(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn is_ascii_ws(b: u8) -> bool {
     matches!(b, b' ' | b'\t')
 }
@@ -813,15 +1139,18 @@ fn is_ident_rest(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'.'
 }
 
-fn is_arg_delim(b: u8) -> bool {
-    is_ascii_ws(b) || matches!(b, b',' | b')')
+fn is_expr_delim(b: u8) -> bool {
+    is_ascii_ws(b) || matches!(b, b',' | b')' | b'~')
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const DUMMY_CTX: LineCtx = LineCtx { file: FileId(0), line: 0};
+    const DUMMY_CTX: LineCtx = LineCtx {
+        file: FileId(0),
+        line: 0,
+    };
 
     fn opt(src: &str, ctx: LineCtx) -> (String, Literal) {
         match parse_line(src, ctx).unwrap() {
@@ -830,23 +1159,23 @@ mod tests {
         }
     }
 
-    fn directive(src: &str, ctx: LineCtx) -> (String, Vec<Arg>) {
+    fn directive(src: &str, ctx: LineCtx) -> (String, Vec<Expr>) {
         match parse_line(src, ctx).unwrap() {
             Some(Stmt::Directive { name, args, .. }) => (name, args),
             other => panic!("expected directive, got {other:?}"),
         }
     }
 
-    fn definition(src: &str, ctx: LineCtx) -> (String, Vec<Arg>) {
+    fn definition(src: &str, ctx: LineCtx) -> (String, Vec<Expr>) {
         match parse_line(src, ctx).unwrap() {
             Some(Stmt::Definition { kind, args, .. }) => (kind, args),
             other => panic!("expected definition, got {other:?}"),
         }
     }
 
-    fn mapping(src: &str, ctx: LineCtx) -> (Expr, MappingOp, Expr) {
+    fn mapping(src: &str, ctx: LineCtx) -> (Vec<MappingAttr>, Expr, MappingOp, Expr) {
         match parse_line(src, ctx).unwrap() {
-            Some(Stmt::Mapping { lhs, op, rhs, .. }) => (lhs, op, rhs),
+            Some(Stmt::Mapping { attrs, lhs, op, rhs, .. }) => (attrs, lhs, op, rhs),
             other => panic!("expected mapping, got {other:?}"),
         }
     }
@@ -854,12 +1183,43 @@ mod tests {
     fn call_name(expr: &Expr) -> &str {
         match expr {
             Expr::Call { name, .. } => name,
+            other => panic!("expected call, got {other:?}"),
         }
     }
 
-    fn call_args(expr: &Expr) -> &[Arg] {
+    fn call_args(expr: &Expr) -> &[Expr] {
         match expr {
             Expr::Call { args, .. } => args,
+            other => panic!("expected call, got {other:?}"),
+        }
+    }
+
+    fn ident_name(expr: &Expr) -> &str {
+        match expr {
+            Expr::Ident { name, .. } => name,
+            other => panic!("expected ident, got {other:?}"),
+        }
+    }
+
+    fn lit(expr: &Expr) -> &Literal {
+        match expr {
+            Expr::Literal { value, .. } => value,
+            other => panic!("expected literal, got {other:?}"),
+        }
+    }
+
+    fn pair(expr: &Expr) -> (char, char) {
+        match expr {
+            Expr::Pair { unshifted, shifted, .. } => {
+                let Literal::Char(a) = lit(unshifted) else {
+                    panic!("expected char literal on pair lhs, got {unshifted:?}");
+                };
+                let Literal::Char(b) = lit(shifted) else {
+                    panic!("expected char literal on pair rhs, got {shifted:?}");
+                };
+                (*a, *b)
+            }
+            other => panic!("expected pair, got {other:?}"),
         }
     }
 
@@ -872,9 +1232,16 @@ mod tests {
     }
 
     #[test]
-    fn accepts_trailing_lf_cr() {
-        assert!(matches!(parse_line("foo = true\n", DUMMY_CTX).unwrap(), Some(Stmt::OptionAssignment { .. })));
-        assert!(matches!(parse_line("foo = true\r\n", DUMMY_CTX).unwrap(), Some(Stmt::OptionAssignment { .. })));
+    fn accepts_trailing_lf_crlf() {
+        assert!(matches!(
+            parse_line("foo = true\n", DUMMY_CTX).unwrap(),
+            Some(Stmt::OptionAssignment { .. })
+        ));
+
+        assert!(matches!(
+            parse_line("foo = true\r\n", DUMMY_CTX).unwrap(),
+            Some(Stmt::OptionAssignment { .. })
+        ));
     }
 
     #[test]
@@ -883,9 +1250,12 @@ mod tests {
     }
 
     #[test]
-    fn hash_inside_strlit_isnt_a_comment() {
+    fn hash_inside_strlit_or_charlit_isnt_a_comment() {
         let (_, value) = opt(r#"x = "a#b" # comment"#, DUMMY_CTX);
         assert_eq!(value, Literal::String("a#b".to_owned()));
+
+        let (_, value) = opt("x = '#' # comment", DUMMY_CTX);
+        assert_eq!(value, Literal::Char('#'));
 
         let (_, value) = opt(r#"x = 123 # comment"#, DUMMY_CTX);
         assert_eq!(value, Literal::Int(123));
@@ -893,22 +1263,57 @@ mod tests {
 
     #[test]
     fn parses_strlit_escapes() {
-        let (_, value) = opt(r#"x = "a\"b\\c""#, DUMMY_CTX);
-        assert_eq!(value, Literal::String(r#"a"b\c"#.to_owned()));
+        let (_, value) = opt(r#"x = "a\"b\\c\n\t\r\u{e5}\x21""#, DUMMY_CTX);
+        assert_eq!(value, Literal::String("a\"b\\c\n\t\rå!".to_owned()));
     }
 
     #[test]
     fn rejects_bad_strlit_escapes() {
-        assert!(parse_line(r#"x = "bad\n""#, DUMMY_CTX).is_err());
-        assert!(parse_line(r#"x = "bad\t""#, DUMMY_CTX).is_err());
-        assert!(parse_line(r#"x = "bad\x41""#, DUMMY_CTX).is_err());
+        for src in [
+            r#"x = "bad\q""#,
+            r#"x = "bad\x4""#,
+            r#"x = "bad\xzz""#,
+            r#"x = "bad\u{}""#,
+            r#"x = "bad\u{110000}""#,
+        ] {
+            assert!(parse_line(src, DUMMY_CTX).is_err(), "accepted {src:?}");
+        }
     }
 
     #[test]
     fn rejects_unterminated_strlits() {
         assert!(parse_line(r#"x = "abc"#, DUMMY_CTX).is_err());
-        assert!(parse_line(r#"tok_utf8("x"#, DUMMY_CTX).is_err());
+        assert!(parse_line(r#"utf8("x"#, DUMMY_CTX).is_err());
         assert!(parse_line(r#"define group "x"#, DUMMY_CTX).is_err());
+    }
+
+    #[test]
+    fn parses_char_literals() {
+        assert_eq!(opt("x = 'a'", DUMMY_CTX).1, Literal::Char('a'));
+        assert_eq!(opt("x = 'å'", DUMMY_CTX).1, Literal::Char('å'));
+        assert_eq!(opt(r"x = '\''", DUMMY_CTX).1, Literal::Char('\''));
+        assert_eq!(opt(r"x = '\\'", DUMMY_CTX).1, Literal::Char('\\'));
+        assert_eq!(opt(r"x = '\n'", DUMMY_CTX).1, Literal::Char('\n'));
+        assert_eq!(opt(r"x = '\t'", DUMMY_CTX).1, Literal::Char('\t'));
+        assert_eq!(opt(r"x = '\r'", DUMMY_CTX).1, Literal::Char('\r'));
+        assert_eq!(opt(r"x = '\x1b'", DUMMY_CTX).1, Literal::Char('\x1b'));
+        assert_eq!(opt(r"x = '\u{e5}'", DUMMY_CTX).1, Literal::Char('å'));
+    }
+
+    #[test]
+    fn rejects_bad_char_literals() {
+        for src in [
+            "x = ''",
+            "x = 'ab'",
+            "x = 'a",
+            r"x = '\q'",
+            r"x = '\x4'",
+            r"x = '\xzz'",
+            r"x = '\u{}'",
+            r"x = '\u{110000}'",
+        ] {
+            assert!(parse_line(src, DUMMY_CTX).is_err(), "accepted {src:?}");
+        }
     }
 
     #[test]
@@ -962,25 +1367,33 @@ mod tests {
     fn parses_directive() {
         let (name, args) = directive(r#"@version 1"#, DUMMY_CTX);
         assert_eq!(name, "version");
-        assert_eq!(args, vec![Arg::Int(1)]);
+        assert_eq!(args.len(), 1);
+        assert_eq!(lit(&args[0]), &Literal::Int(1));
 
         let (name, args) = directive(r#"@include "foo.conf""#, DUMMY_CTX);
         assert_eq!(name, "include");
-        assert_eq!(args, vec![Arg::String("foo.conf".to_owned())]);
+        assert_eq!(args.len(), 1);
+        assert_eq!(lit(&args[0]), &Literal::String("foo.conf".to_owned()));
     }
 
     #[test]
     fn parses_definition() {
         let (kind, args) = definition(r#"define group "x""#, DUMMY_CTX);
+
         assert_eq!(kind, "group");
-        assert_eq!(args, vec![Arg::String("x".to_owned())]);
+        assert_eq!(args.len(), 1);
+        assert_eq!(lit(&args[0]), &Literal::String("x".to_owned()));
     }
 
     #[test]
     fn define_is_matched_as_keyword() {
-        assert!(matches!(parse_line(r#"define group "x""#, DUMMY_CTX).unwrap(), Some(Stmt::Definition { .. })));
+        assert!(matches!(
+            parse_line(r#"define group "x""#, DUMMY_CTX).unwrap(),
+            Some(Stmt::Definition { .. })
+        ));
 
         let (name, value) = opt("define.foo = true", DUMMY_CTX);
+
         assert_eq!(name, "define.foo");
         assert_eq!(value, Literal::Bool(true));
 
@@ -989,33 +1402,56 @@ mod tests {
 
     #[test]
     fn parses_right_mapping() {
-        let (lhs, op, rhs) = mapping(r#"group("x") => tok_utf8("r")"#, DUMMY_CTX);
+        let (attrs, lhs, op, rhs) = mapping(r#"group("x") => send_utf8('r')"#, DUMMY_CTX);
 
+        assert!(attrs.is_empty());
         assert_eq!(op, MappingOp::Right);
-        assert_eq!(call_name(&lhs), "group");
-        assert_eq!(call_args(&lhs), &[Arg::String("x".to_owned())]);
 
-        assert_eq!(call_name(&rhs), "tok_utf8");
-        assert_eq!(call_args(&rhs), &[Arg::String("r".to_owned())]);
+        assert_eq!(call_name(&lhs), "group");
+        assert_eq!(call_args(&lhs).len(), 1);
+        assert_eq!(lit(&call_args(&lhs)[0]), &Literal::String("x".to_owned()));
+
+        assert_eq!(call_name(&rhs), "send_utf8");
+        assert_eq!(call_args(&rhs).len(), 1);
+        assert_eq!(lit(&call_args(&rhs)[0]), &Literal::Char('r'));
     }
 
     #[test]
     fn parses_left_mapping() {
-        let (lhs, op, rhs) = mapping(r#"tok_utf8("r") <= group("x")"#, DUMMY_CTX);
+        let (attrs, lhs, op, rhs) = mapping(r#"send_utf8('r') <= group("x")"#, DUMMY_CTX);
+
+        assert!(attrs.is_empty());
         assert_eq!(op, MappingOp::Left);
-        assert_eq!(call_name(&lhs), "tok_utf8");
+        assert_eq!(call_name(&lhs), "send_utf8");
         assert_eq!(call_name(&rhs), "group");
     }
 
     #[test]
-    fn operators_inside_strlits_dont_count() {
+    fn operators_inside_literals_dont_count() {
         let (_, value) = opt(r#"x = "=> <= = #""#, DUMMY_CTX);
         assert_eq!(value, Literal::String("=> <= = #".to_owned()));
 
-        let (lhs, op, rhs) = mapping(r#"group("a=>b") => tok_utf8("=")"#, DUMMY_CTX);
+        let (_, value) = opt("x = '='", DUMMY_CTX);
+        assert_eq!(value, Literal::Char('='));
+
+        let (attrs, lhs, op, rhs) = mapping(r#"group("a=>b") => send_utf8('=')"#, DUMMY_CTX);
+        assert!(attrs.is_empty());
         assert_eq!(op, MappingOp::Right);
-        assert_eq!(call_args(&lhs), &[Arg::String("a=>b".to_owned())]);
-        assert_eq!(call_args(&rhs), &[Arg::String("=".to_owned())]);
+        assert_eq!(lit(&call_args(&lhs)[0]), &Literal::String("a=>b".to_owned()));
+        assert_eq!(lit(&call_args(&rhs)[0]), &Literal::Char('='));
+    }
+
+    #[test]
+    fn mapping_operator_inside_call_args_does_not_count() {
+        let (attrs, lhs, op, rhs) = mapping(
+            r#"outer(inner("=>")) => send_utf8('x')"#,
+            DUMMY_CTX,
+        );
+
+        assert!(attrs.is_empty());
+        assert_eq!(op, MappingOp::Right);
+        assert_eq!(call_name(&lhs), "outer");
+        assert_eq!(call_name(&rhs), "send_utf8");
     }
 
     #[test]
@@ -1027,36 +1463,114 @@ mod tests {
 
     #[test]
     fn parses_call_args() {
-        let (lhs, _, _) = mapping(r#"tok_key(up, ctrl, alt) => tok_utf8("x")"#, DUMMY_CTX);
-        assert_eq!(call_name(&lhs), "tok_key");
-        assert_eq!(
-            call_args(&lhs),
-            &[
-                Arg::Ident("up".to_owned()),
-                Arg::Ident("ctrl".to_owned()),
-                Arg::Ident("alt".to_owned()),
-            ],
-        );
+        let (_, lhs, _, _) = mapping(r#"key(up, ctrl, alt) => send_utf8('x')"#, DUMMY_CTX);
+        assert_eq!(call_name(&lhs), "key");
+        let args = call_args(&lhs);
+
+        assert_eq!(args.len(), 3);
+        assert_eq!(ident_name(&args[0]), "up");
+        assert_eq!(ident_name(&args[1]), "ctrl");
+        assert_eq!(ident_name(&args[2]), "alt");
     }
 
     #[test]
     fn parses_nested_call_arg_if_supported() {
         let (name, args) = directive(r#"@service exec("foo", "bar")"#, DUMMY_CTX);
         assert_eq!(name, "service");
+        assert_eq!(args.len(), 1);
 
-        match &args[..] {
-            [Arg::Call(expr)] => {
-                assert_eq!(call_name(expr), "exec");
-                assert_eq!(
-                    call_args(expr),
-                    &[
-                        Arg::String("foo".to_owned()),
-                        Arg::String("bar".to_owned()),
-                    ],
-                );
-            }
-            other => panic!("expected nested call arg, got {other:?}"),
+        let expr = &args[0];
+        assert_eq!(call_name(expr), "exec");
+        let args = call_args(expr);
+
+        assert_eq!(args.len(), 2);
+        assert_eq!(lit(&args[0]), &Literal::String("foo".to_owned()));
+        assert_eq!(lit(&args[1]), &Literal::String("bar".to_owned()));
+    }
+
+    #[test]
+    fn parses_char_pair_args() {
+        let (attrs, lhs, op, rhs) = mapping(
+            r"utf8('d'~'D', any) => inherit_pair_utf8('w'~'W')",
+            DUMMY_CTX,
+        );
+
+        assert!(attrs.is_empty());
+        assert_eq!(op, MappingOp::Right);
+
+        assert_eq!(call_name(&lhs), "utf8");
+
+        let lhs_args = call_args(&lhs);
+
+        assert_eq!(lhs_args.len(), 2);
+        assert_eq!(pair(&lhs_args[0]), ('d', 'D'));
+        assert_eq!(ident_name(&lhs_args[1]), "any");
+
+        assert_eq!(call_name(&rhs), "inherit_pair_utf8");
+
+        let rhs_args = call_args(&rhs);
+
+        assert_eq!(rhs_args.len(), 1);
+        assert_eq!(pair(&rhs_args[0]), ('w', 'W'));
+    }
+
+    #[test]
+    fn parses_char_pair_with_escapes() {
+        let (_, lhs, _, rhs) = mapping(
+            r"utf8('\t'~'\n') => inherit_pair_utf8('\x20'~'\u{21}')",
+            DUMMY_CTX,
+        );
+
+        assert_eq!(pair(&call_args(&lhs)[0]), ('\t', '\n'));
+        assert_eq!(pair(&call_args(&rhs)[0]), (' ', '!'));
+    }
+
+    #[test]
+    fn rejects_trailing_pair_input() {
+        for src in [
+            r"utf8('a'~'A'~'B') => send_utf8('b')",
+            r"utf8('a'~) => send_utf8('b')",
+        ] {
+            assert!(parse_line(src, DUMMY_CTX).is_err(), "accepted {src:?}");
         }
+    }
+
+    #[test]
+    fn parses_mapping_attrs() {
+        let (attrs, lhs, op, rhs) = mapping(
+            r#"passthrough! unique_src! timeout!(100) key(space) => sh("x")"#,
+            DUMMY_CTX,
+        );
+
+        assert_eq!(op, MappingOp::Right);
+        assert_eq!(call_name(&lhs), "key");
+        assert_eq!(call_name(&rhs), "sh");
+
+        assert_eq!(attrs.len(), 3);
+
+        assert_eq!(attrs[0].name, "passthrough");
+        assert!(attrs[0].args.is_empty());
+
+        assert_eq!(attrs[1].name, "unique_src");
+        assert!(attrs[1].args.is_empty());
+
+        assert_eq!(attrs[2].name, "timeout");
+        assert_eq!(attrs[2].args.len(), 1);
+        assert_eq!(lit(&attrs[2].args[0]), &Literal::Int(100));
+    }
+
+    #[test]
+    fn mapping_attrs_may_touch_lhs_without_whitespace() {
+        let (attrs, lhs, op, rhs) = mapping(
+            r#"passthrough!key(space) => sh("x")"#,
+            DUMMY_CTX,
+        );
+
+        assert_eq!(op, MappingOp::Right);
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs[0].name, "passthrough");
+        assert_eq!(call_name(&lhs), "key");
+        assert_eq!(call_name(&rhs), "sh");
     }
 
     #[test]
@@ -1064,6 +1578,7 @@ mod tests {
         assert!(parse_line(r#"x = true false"#, DUMMY_CTX).is_err());
         assert!(parse_line(r#"x = "a" "b""#, DUMMY_CTX).is_err());
         assert!(parse_line(r#"x = 1 2"#, DUMMY_CTX).is_err());
+        assert!(parse_line(r#"x = 'a' 'b'"#, DUMMY_CTX).is_err());
     }
 
     #[test]
@@ -1071,5 +1586,17 @@ mod tests {
         assert!(parse_line("1abc = true", DUMMY_CTX).is_err());
         assert!(parse_line("@1abc true", DUMMY_CTX).is_err());
         assert!(parse_line(r#"define 1abc "x""#, DUMMY_CTX).is_err());
+    }
+
+    #[test]
+    fn parses_expr_idents_and_literals_in_directives() {
+        let (name, args) = directive(r#"@protocol want kitty true 123 'x'"#, DUMMY_CTX);
+        assert_eq!(name, "protocol");
+        assert_eq!(args.len(), 5);
+        assert_eq!(ident_name(&args[0]), "want");
+        assert_eq!(ident_name(&args[1]), "kitty");
+        assert_eq!(lit(&args[2]), &Literal::Bool(true));
+        assert_eq!(lit(&args[3]), &Literal::Int(123));
+        assert_eq!(lit(&args[4]), &Literal::Char('x'));
     }
 }

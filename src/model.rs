@@ -4,6 +4,8 @@ use std::{collections::HashMap};
 
 use crate::config::{line::Span, options::Options};
 
+// ================================================================================================
+// protocol
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Protocol {
     Legacy = 0,
@@ -23,6 +25,14 @@ impl Default for ProtocolPolicy {
             minimum: Protocol::Legacy,
         }
     }
+}
+
+// ================================================================================================
+// keys/mods
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CharPair {
+    pub unshifted: char,
+    pub shifted: char,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -186,6 +196,8 @@ pub enum KeyEventKind {
     Release,
 }
 
+// ================================================================================================
+// groups
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GroupId(pub(crate) usize);
 
@@ -225,6 +237,8 @@ impl GroupTable {
     }
 }
 
+// ================================================================================================
+// signal/command
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Signal(pub libc::c_int);
 
@@ -238,12 +252,8 @@ pub enum CommandSpec {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Event {
-    Signal(Signal),
-    Sockdata(Vec<u8>),
-}
-
+// ================================================================================================
+// concrete sources / payloads
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Token {
     Utf8 {
@@ -289,57 +299,16 @@ impl Token {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum InheritToken {
-    Utf8 {
-        ch: char,
-    },
-    Key {
-        key: Key,
-    },
-}
-
-impl InheritToken {
-    pub fn to_token(&self, payload: TokenPayload) -> Token {
-        match *self {
-            Self::Utf8 { ch } => Token::Utf8 {
-                ch,
-                mods: payload.mods,
-                kind: payload.kind,
-            },
-            Self::Key { key } => Token::Key {
-                key,
-                mods: payload.mods,
-                kind: payload.kind,
-            },
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TokenPayload {
-    pub mods: Mods,
+    pub actual_mods: Mods,
+    pub logical_mods: Mods,
     pub kind: KeyEventKind,
-}
-
-impl TokenPayload {
-    pub fn from_token(token: &Token) -> Self {
-        match *token {
-            Token::Utf8 { mods, kind, .. } | Token::Key { mods, kind, .. } => {
-                Self { mods, kind }
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Payload {
     Token(TokenPayload),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PayloadKind {
-    Token,
 }
 
 impl Payload {
@@ -354,6 +323,83 @@ impl Payload {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadKind {
+    Token,
+}
+
+// ================================================================================================
+// source/target patterns
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum KeyPattern {
+    Named(Key),
+    CharPair(CharPair),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ModsPattern {
+    Any,
+    AnyOf(Vec<Mods>),
+}
+
+impl ModsPattern {
+    pub fn matches(&self, mods: Mods) -> bool {
+        match self {
+            Self::Any => true,
+            Self::AnyOf(v) => v.contains(&mods),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TokenPattern {
+    Key {
+        key: KeyPattern,
+        mods: ModsPattern,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum InheritToken {
+    Key {
+        key: KeyPattern,
+    },
+}
+
+impl InheritToken {
+    pub fn to_token(&self, payload: TokenPayload) -> Token {
+        match self {
+            Self::Key { key } => match *key {
+                KeyPattern::Named(key) => Token::Key {
+                    key: key,
+                    mods: payload.actual_mods,
+                    kind: payload.kind,
+                },
+                KeyPattern::CharPair(pair) => {
+                    let ch = if (payload.logical_mods & Mods::SHIFT) != Mods::EMPTY {
+                        pair.shifted
+                    } else {
+                        pair.unshifted
+                    };
+                    Token::Utf8 {
+                        ch,
+                        mods: payload.actual_mods,
+                        kind: payload.kind,
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ================================================================================================
+// entity types
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Event {
+    Signal(Signal),
+    Sockdata(Vec<u8>),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
     Command(CommandSpec),
@@ -362,14 +408,14 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Source {
     Event(Event),
-    Token(Token),
+    Token(TokenPattern),
     Group(GroupId),
 }
 
 impl Source {
     pub fn provides_payload(&self) -> Option<PayloadKind> {
-        match *self {
-            Source::Token(_) => Some(PayloadKind::Token),
+        match self {
+            Self::Token(_) => Some(PayloadKind::Token),
             _ => None,
         }
     }
@@ -385,13 +431,15 @@ pub enum Target {
 
 impl Target {
     pub fn requires_payload(&self) -> Option<PayloadKind> {
-        match *self {
+        match self {
             Target::InheritToken(_) => Some(PayloadKind::Token),
             _ => None,
         }
     }
 }
 
+// ================================================================================================
+// other primary config concepts
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mapping {
     pub from: Source,

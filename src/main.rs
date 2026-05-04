@@ -12,14 +12,14 @@ use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
 use crate::config::loader::ConfigLoader;
-use crate::model::{Action, Event, Source};
+use crate::model::{Action, Event};
 use crate::runtime::children::{ActionManager, ServiceManager};
 use crate::runtime::cli::{Cli, config_path};
 use crate::runtime::io::{
     ByteQueue, ReadResult, ReadToQueueResult, WriteResult, WriteToPtyResult,
     read, read_pty_to_queue, drain_from_queue, drain_to_pty_from_queue,
 };
-use crate::runtime::router::{RouteEffect, Router};
+use crate::runtime::router::{RouteEffect, RouteInput, Router};
 use crate::term::decode::{Decoded, Decoder, DecoderConfig};
 use crate::term::encode::Encoder;
 use crate::term::mode::{TermMode, TerminalModeTracker};
@@ -223,7 +223,7 @@ try '--help' for more info
         for item in decoded {
             match item {
                 Decoded::Token(tok) => {
-                    let r = router.fire(&Source::Token(tok.clone()))?;
+                    let r = router.fire(RouteInput::Token(tok))?;
                     if !r.matched && let Some(bytes) = encoder.encode_token(&tok) {
                         master_queue.push(&bytes).map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?;
                     }
@@ -410,7 +410,7 @@ try '--help' for more info
 
         if ready.readable(FdKey::Sock) {
             while let Some(b) = sock.recv()? {
-                let r = router.fire(&Source::Event(Event::Sockdata(b)))?;
+                let r = router.fire(RouteInput::Event(&Event::Sockdata(b)))?;
                 for effect in r.effects {
                     apply_effect(&effect, &encoder, &mut master_queue, &mut actions)?;
                 }

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::model::Config;
-use super::line::{Arg, FileId, LineCtx, ParseError, Span, Stmt, parse_line};
+use super::line::{Expr, FileId, LineCtx, Literal, ParseError, Span, Stmt, parse_line};
 use super::lower::{ConfigBuilder, ConfigError};
 
 #[derive(Debug)]
@@ -161,7 +161,7 @@ impl ConfigLoader {
         }
     }
 
-    fn apply_version(&mut self, args: Vec<Arg>, span: Span, is_root: bool) -> Result<(), ConfigLoadError> {
+    fn apply_version(&mut self, args: Vec<Expr>, span: Span, is_root: bool) -> Result<(), ConfigLoadError> {
         let version = expect_version_arg(args, span)?;
         if version != 1 {
             return Err(ConfigLoadError::UnsupportedVersion { version, span });
@@ -191,7 +191,7 @@ impl ConfigLoader {
         Ok(())
     }
 
-    fn apply_include(&mut self, args: Vec<Arg>, span: Span, base_dir: &Path) -> Result<(), ConfigLoadError> {
+    fn apply_include(&mut self, args: Vec<Expr>, span: Span, base_dir: &Path) -> Result<(), ConfigLoadError> {
         let include_path = expect_include_arg(args, span)?;
         let path = if include_path.is_absolute() {
             include_path
@@ -202,9 +202,9 @@ impl ConfigLoader {
     }
 }
 
-fn expect_version_arg(args: Vec<Arg>, span: Span) -> Result<u32, ConfigLoadError> {
+fn expect_version_arg(args: Vec<Expr>, span: Span) -> Result<u32, ConfigLoadError> {
     let mut args = args.into_iter();
-    let Some(Arg::Int(version)) = args.next() else {
+    let Some(Expr::Literal { value: Literal::Int(version), .. }) = args.next() else {
         return Err(ConfigLoadError::BadVersionArgs { span });
     };
     if args.next().is_some() {
@@ -213,9 +213,9 @@ fn expect_version_arg(args: Vec<Arg>, span: Span) -> Result<u32, ConfigLoadError
     u32::try_from(version).map_err(|_| ConfigLoadError::BadVersionArgs { span })
 }
 
-fn expect_include_arg(args: Vec<Arg>, span: Span) -> Result<PathBuf, ConfigLoadError> {
+fn expect_include_arg(args: Vec<Expr>, span: Span) -> Result<PathBuf, ConfigLoadError> {
     let mut args = args.into_iter();
-    let Some(Arg::String(path)) = args.next() else {
+    let Some(Expr::Literal { value: Literal::String(path), .. }) = args.next() else {
         return Err(ConfigLoadError::BadIncludeArgs { span });
     };
     if args.next().is_some() {
@@ -232,7 +232,9 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use crate::model::{Action, CommandSpec, Event, Key, Mods, Source, Target, Token};
+    use crate::model::{
+        Action, CommandSpec, Event, Key, KeyPattern, Mods, ModsPattern, Source, Target, TokenPattern,
+    };
 
     fn write_file(dir: &TempDir, rel: &str, text: &str) -> std::path::PathBuf {
         let path = dir.path().join(rel);
@@ -281,7 +283,7 @@ define group "x"
     # comment with leading whitespace
 @version 1
 
-tok_key(f1) => tok_utf8("x")
+key(f1) => send_key('x')
 "#);
 
         let cfg = parse(&root).unwrap();
@@ -304,7 +306,7 @@ define group "x"
     fn root_version_must_be_first_stmt_mapping_before_version() {
         let dir = tempfile::tempdir().unwrap();
         let root = write_file(&dir, "root.conf", r#"
-tok_key(f1) => tok_utf8("x")
+key(f1) => send_key('x')
 @version 1
 "#);
 
@@ -316,7 +318,7 @@ tok_key(f1) => tok_utf8("x")
     fn root_version_must_be_first_stmt_include_before_version() {
         let dir = tempfile::tempdir().unwrap();
         write_file(&dir, "inc.conf", r#"
-tok_key(f1) => tok_utf8("x")
+key(f1) => send_key('x')
 "#);
         let root = write_file(&dir, "root.conf", r#"
 @include "inc.conf"
@@ -375,8 +377,8 @@ define group "reload"
         let root = write_file(&dir, "root.conf", r#"
 @version 1
 @include "groups.conf"
-tok_key(f5) => group("reload")
-group("reload") => act_shell("reload")
+key(f5) => group("reload")
+group("reload") => sh("reload")
 "#);
 
         let cfg = parse(&root).unwrap();
@@ -385,10 +387,10 @@ group("reload") => act_shell("reload")
         assert_eq!(cfg.mappings.len(), 2);
         assert_eq!(
             cfg.mappings[0].from,
-            Source::Token(Token::press_key(
-                Key::Function(5),
-                Mods::EMPTY,
-            )),
+            Source::Token(TokenPattern::Key {
+                key: KeyPattern::Named(Key::Function(5)),
+                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
+            }),
         );
         assert!(matches!(cfg.mappings[0].to, Target::Group(_)));
         assert_eq!(
@@ -407,7 +409,7 @@ define group "x"
 "#);
         let root = write_file(&dir, "root.conf", r#"
 @version 1
-tok_key(f1) => group("x")
+key(f1) => group("x")
 @include "groups.conf"
 "#);
 
@@ -427,7 +429,7 @@ define group "nested"
         let root = write_file(&dir, "root.conf", r#"
 @version 1
 @include "sub/include-groups.conf"
-tok_key(f1) => group("nested")
+key(f1) => group("nested")
 "#);
 
         let cfg = parse(&root).unwrap();
@@ -440,7 +442,7 @@ tok_key(f1) => group("nested")
     fn included_file_inherits_root_version_when_omitted() {
         let dir = tempfile::tempdir().unwrap();
         write_file(&dir, "inc.conf", r#"
-tok_key(f1) => tok_utf8("x")
+key(f1) => send_key('x')
 "#);
         let root = write_file(&dir, "root.conf", r#"
 @version 1
@@ -456,7 +458,7 @@ tok_key(f1) => tok_utf8("x")
         let dir = tempfile::tempdir().unwrap();
         write_file(&dir, "inc.conf", r#"
 @version 1
-tok_key(f1) => tok_utf8("x")
+key(f1) => send_key('x')
 "#);
         let root = write_file(&dir, "root.conf", r#"
 @version 1
@@ -472,7 +474,7 @@ tok_key(f1) => tok_utf8("x")
         let dir = tempfile::tempdir().unwrap();
         write_file(&dir, "inc.conf", r#"
 @version 2
-tok_key(f1) => tok_utf8("x")
+key(f1) => send_key('x')
 "#);
         let root = write_file(&dir, "root.conf", r#"
 @version 1
@@ -498,7 +500,7 @@ tok_key(f1) => tok_utf8("x")
     fn included_version_must_appear_before_stmts() {
         let dir = tempfile::tempdir().unwrap();
         write_file(&dir, "inc.conf", r#"
-tok_key(f1) => tok_utf8("x")
+key(f1) => send_key('x')
 @version 1
 "#);
         let root = write_file(&dir, "root.conf", r#"
@@ -602,10 +604,10 @@ define group "x"
     fn nested_include_without_duplicate_definitions_is_allowed() {
         let dir = tempfile::tempdir().unwrap();
         write_file(&dir, "common-a.conf", r#"
-tok_key(f1) => tok_utf8("a")
+key(f1) => send_key('a')
 "#);
         write_file(&dir, "common-b.conf", r#"
-tok_key(f2) => tok_utf8("b")
+key(f2) => send_key('b')
 "#);
         write_file(&dir, "left.conf", r#"
 @include "common-a.conf"
@@ -628,7 +630,7 @@ tok_key(f2) => tok_utf8("b")
         let dir = tempfile::tempdir().unwrap();
         let root = write_file(&dir, "root.conf", r#"
 @version 1
-tok_key(f1) => tok_utf8("x") => tok_utf8("y")
+key(f1) => send_key('x') => send_key('y')
 "#);
 
         let err = parse_err(&root);
@@ -639,7 +641,7 @@ tok_key(f1) => tok_utf8("x") => tok_utf8("y")
     fn syntax_error_in_included_file_is_reported_as_syntax() {
         let dir = tempfile::tempdir().unwrap();
         write_file(&dir, "bad.conf", r#"
-tok_key(f1) => tok_utf8("x") => tok_utf8("y")
+key(f1) => send_key('x') => send_key('y')
 "#);
         let root = write_file(&dir, "root.conf", r#"
 @version 1
@@ -656,7 +658,7 @@ tok_key(f1) => tok_utf8("x") => tok_utf8("y")
         write_file(&dir, "bad.conf", r#"
 # line 1
 # line 2
-tok_key(nope) => tok_utf8("x")
+key(nope) => send_key('x')
 "#);
         let root = write_file(&dir, "root.conf", r#"
 @version 1
@@ -677,7 +679,7 @@ tok_key(nope) => tok_utf8("x")
     fn include_path_with_comment_and_hash_inside_string() {
         let dir = tempfile::tempdir().unwrap();
         write_file(&dir, "a#b.conf", r#"
-tok_key(f1) => tok_utf8("x")
+key(f1) => send_key('x')
 "#);
         let root = write_file(&dir, "root.conf", r#"
 @version 1
@@ -692,7 +694,7 @@ tok_key(f1) => tok_utf8("x")
     fn absolute_include_path_is_accepted() {
         let dir = tempfile::tempdir().unwrap();
         let inc = write_file(&dir, "inc.conf", r#"
-tok_key(f1) => tok_utf8("x")
+key(f1) => send_key('x')
 "#);
         let root = write_file(&dir, "root.conf", &format!(r#"
 @version 1
@@ -710,10 +712,10 @@ tok_key(f1) => tok_utf8("x")
 @version 1
 define group "reload"
 
-tok_key(f5) => group("reload")
-evt_sockdata_utf8("reload") => group("reload")
-group("reload") => tok_utf8("r", ctrl)
-group("reload") => act_shell("reload")
+key(f5) => group("reload")
+sockdata_utf8("reload") => group("reload")
+group("reload") => send_key('r', ctrl)
+group("reload") => sh("reload")
 "#);
         let cfg = parse(&root).unwrap();
 
