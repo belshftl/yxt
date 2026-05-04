@@ -1,0 +1,9 @@
+- better diagnostics, print file path / line / col, error message, problematic line with underline/caret for err span, colored output, include chain
+- group cycle / include cycle formatting
+- pair inference for US layouts
+- logfile / live debug trace
+- `unique_src!` to catch "why does this produce multiple keys" bugs
+- active mode query on startup
+- start `@protocol` plumbing
+- reserve `unsafe!` for things like `raw_passthrough!` and later raw byte/seq ops
+- `&` / `|` infix operators and mod patterns

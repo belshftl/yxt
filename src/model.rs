@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-use std::{collections::HashMap};
+use std::collections::HashMap;
 
 use crate::config::{line::Span, options::Options};
 
