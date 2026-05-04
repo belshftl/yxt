@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::model::Config;
-use super::line::{parse_line, Arg, FileId, LineCtx, ParseError, Span, Stmt};
+use super::line::{Arg, FileId, LineCtx, ParseError, Span, Stmt, parse_line};
 use super::lower::{ConfigBuilder, ConfigError};
 
 #[derive(Debug)]

@@ -4,7 +4,7 @@ use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
 use crate::model::{CommandSpec, Service};
-use crate::unix::child::{spawn, ChildError, ChildSpawnOptions, OsCommandSpec};
+use crate::unix::child::{ChildError, ChildSpawnOptions, OsCommandSpec, spawn};
 
 pub struct ActionManager {
     options: ChildSpawnOptions,

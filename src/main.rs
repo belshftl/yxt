@@ -24,8 +24,8 @@ use crate::term::decode::{Decoded, Decoder, DecoderConfig};
 use crate::term::encode::Encoder;
 use crate::term::mode::{TermMode, TerminalModeTracker};
 use crate::unix::child::{
-    ChildEnv, ChildExt, ChildSpawnOptions, ChildStdio, OsCommandSpec, PtyChildSpawnOptions,
-    spawn_pty_attached,
+    ChildEnv, ChildExt, ChildSpawnOptions, ChildStdio, OsCommandSpec, PtyChild,
+    PtyChildSpawnOptions, spawn_pty_attached,
 };
 use crate::unix::fd::{NonblockingFd, ReadyFds, SelectFds, select};
 use crate::unix::pledge::try_pledge;
@@ -68,7 +68,7 @@ pub enum AppError {
     #[error(transparent)]
     Route(#[from] crate::runtime::router::RouteError),
 
-    #[error("write queue of {0} bytes got full, is the child frozen / not consuming its input?")]
+    #[error("PTY input queue of {0} bytes is full; child is not consuming its input or mapping expanded too much, bailing out")]
     MasterQueueFull(usize),
 }
 
@@ -238,9 +238,30 @@ try '--help' for more info
         Ok(())
     }
 
+    fn begin_shutdown(
+        stopping: &mut bool,
+        services: &mut ServiceManager,
+        pty_child: &PtyChild,
+        sig: Option<libc::c_int>,
+        child_kill_deadline: &mut Option<Instant>,
+        now: Instant,
+    ) -> Result<(), AppError> {
+        if *stopping {
+            return Ok(());
+        }
+        *stopping = true;
+        services.begin_shutdown(now)?;
+        if let Some(sig) = sig {
+            pty_child.child.signal(sig).ok();
+            *child_kill_deadline = Some(now + SHUTDOWN_GRACE);
+        }
+        Ok(())
+    }
+
     let mut stdin_buf = vec![0u8; 8192].into_boxed_slice();
     let mut master_queue = ByteQueue::new(32768);
     let mut stdout_queue = ByteQueue::new(8192);
+    let mut mode_dirty = false;
     let mut stopping = false;
     let mut child_down_or_forgotten = false;
     let mut services_down = false;
@@ -248,12 +269,13 @@ try '--help' for more info
     'mainloop: loop {
         let now = Instant::now();
 
-        if pty_child.child.try_wait()?.is_some() {
-            stopping = true;
-            services.begin_shutdown(now)?;
+        if !child_down_or_forgotten && pty_child.child.try_wait()?.is_some() {
+            begin_shutdown(&mut stopping, &mut services, &pty_child, None, &mut child_kill_deadline, now)?;
             child_down_or_forgotten = true;
         }
-        services.check_exits()?;
+        if !stopping {
+            services.check_exits()?;
+        }
         actions.reap();
 
         if stopping {
@@ -282,9 +304,8 @@ try '--help' for more info
             let mut write = Vec::new();
 
             read.push((FdKey::Signals, signals.as_fd()));
-            if !stopping && stdout_queue.is_empty() && master_queue.remaining() > 0 {
-                // don't read stdin / fire sockdata events if we have unflushed data
-                // to avoid using a terminal mode the real terminal isn't in yet
+            // avoid using a terminal mode the real terminal isn't in yet
+            if !stopping && !(mode_dirty && !stdout_queue.is_empty()) && master_queue.remaining() > 0 {
                 read.push((FdKey::Stdin, stdin.as_fd()));
                 read.push((FdKey::Sock, sock.as_fd()));
             }
@@ -310,20 +331,22 @@ try '--help' for more info
 
         if ready.writable(FdKey::Stdout) {
             while matches!(drain_from_queue(&stdout, &mut stdout_queue)?, WriteResult::Success(_)) {}
+            if stdout_queue.is_empty() {
+                mode_dirty = false;
+            }
         }
 
         if ready.writable(FdKey::PtyMaster) {
             loop {
                 match drain_to_pty_from_queue(&pty_child.pty_master, &mut master_queue)? {
                     WriteToPtyResult::Success(_) => {}
-                    WriteToPtyResult::WouldBlock => break,
+                    WriteToPtyResult::WouldBlock | WriteToPtyResult::EmptyInput => break,
                     WriteToPtyResult::Hangup => {
-                        stopping = true;
-                        services.begin_shutdown(now)?;
+                        // child hung up, don't bother shutting it down, just quit
+                        begin_shutdown(&mut stopping, &mut services, &pty_child, None, &mut child_kill_deadline, now)?;
                         child_down_or_forgotten = true;
                         continue 'mainloop;
                     }
-                    WriteToPtyResult::EmptyInput => panic!("unexpected EmptyInput read result"),
                 }
             }
         }
@@ -335,12 +358,12 @@ try '--help' for more info
                     if tracker.observe_child_output(new) {
                         decoder.set_mode(tracker.mode());
                         encoder.set_mode(tracker.mode());
+                        mode_dirty = true;
                     }
                 }
                 ReadToQueueResult::Eof => {
                     // child hung up, don't bother shutting it down, just quit
-                    stopping = true;
-                    services.begin_shutdown(now)?;
+                    begin_shutdown(&mut stopping, &mut services, &pty_child, None, &mut child_kill_deadline, now)?;
                     child_down_or_forgotten = true;
                     continue 'mainloop;
                 }
@@ -353,10 +376,7 @@ try '--help' for more info
                 match sig {
                     libc::SIGINT | libc::SIGTERM => {
                         // propagate signal to child and quit
-                        stopping = true;
-                        services.begin_shutdown(now)?;
-                        pty_child.child.signal(sig)?;
-                        child_kill_deadline = Some(now + SHUTDOWN_GRACE);
+                        begin_shutdown(&mut stopping, &mut services, &pty_child, Some(sig), &mut child_kill_deadline, now)?;
                         continue 'mainloop;
                     }
                     libc::SIGWINCH => {
@@ -380,10 +400,7 @@ try '--help' for more info
                     ReadResult::WouldBlock => break,
                     ReadResult::Eof => {
                         // actual terminal hung up, nothing useful to do anymore, quit
-                        stopping = true;
-                        services.begin_shutdown(now)?;
-                        pty_child.child.signal(libc::SIGTERM)?;
-                        child_kill_deadline = Some(now + SHUTDOWN_GRACE);
+                        begin_shutdown(&mut stopping, &mut services, &pty_child, Some(libc::SIGTERM), &mut child_kill_deadline, now)?;
                         continue 'mainloop;
                     }
                     ReadResult::EmptyInput => panic!("unexpected EmptyInput read result"),
@@ -400,9 +417,9 @@ try '--help' for more info
             }
         }
 
-        if !stopping && stdout_queue.is_empty() && master_queue.remaining() > 0 {
-            // don't fire tokens if we have unflushed data to avoid using a terminal mode
-            // the real terminal isn't in yet
+        // don't fire tokens if we have a pending mode to avoid using a terminal mode the real
+        // terminal isn't in yet
+        if !stopping && !(mode_dirty && !stdout_queue.is_empty()) && master_queue.remaining() > 0 {
             let mut decoded = Vec::new();
             decoder.flush_timed_out(now, &mut decoded);
             handle_decoded(&decoded, &encoder, &router, &mut master_queue, &mut actions)?;

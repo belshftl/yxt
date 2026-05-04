@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::model::{Key, KeyEventKind, KeypadKey, MediaKey, ModifierKey, Mods, Token};
-use super::control::{read_u32, CsiSeq};
+use super::control::{CsiSeq, read_u32};
 
 pub const FLAG_REPORT_EVENT_TYPES: u8 = 0x02;
 pub const FLAG_REPORT_ALL_KEYS: u8 = 0x08;

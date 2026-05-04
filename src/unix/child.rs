@@ -6,7 +6,7 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use super::tty::{dup_fd, open_pty_pair, set_winsize, switch_to_ctty, PtyOpenError};
+use super::tty::{PtyOpenError, dup_fd, open_pty_pair, set_winsize, switch_to_ctty};
 
 pub trait ChildExt {
     fn signal(&self, sig: libc::c_int) -> std::io::Result<()>;
