@@ -440,21 +440,6 @@ mod tests {
         }
     }
 
-    fn deckpam_cfg() -> DecoderConfig {
-        DecoderConfig {
-            mode: TermMode {
-                decckm: false,
-                deckpam: true,
-                kitty_flags: 0,
-            },
-            esc_byte_is_partial_esc: true,
-            partial_utf8_timeout: Duration::from_millis(10),
-            partial_esc_timeout: Duration::from_millis(20),
-            partial_st_timeout: Duration::from_millis(50),
-            max_pending_bytes: 4096,
-        }
-    }
-
     fn utf8(ch: char, mods: Mods, kind: KeyEventKind) -> Decoded {
         Decoded::Token(Token::Utf8 { ch, mods, kind })
     }

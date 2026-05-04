@@ -4,8 +4,6 @@ use std::ffi::{CStr};
 use std::io::Error;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
 use libc::{termios, winsize};
 
 #[derive(Debug)]
@@ -121,7 +119,6 @@ pub unsafe fn switch_to_ctty(fd: RawFd) -> std::io::Result<()> {
 pub struct PtyPair {
     pub master: OwnedFd,
     pub slave: OwnedFd,
-    pub slave_name: PathBuf,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -176,6 +173,5 @@ pub fn open_pty_pair() -> Result<PtyPair, PtyOpenError> {
     // SAFETY: `slave_raw_fd` is a valid fd, ownership transfers from `slave_raw_fd` to `slave`
     let slave = unsafe { OwnedFd::from_raw_fd(slave_raw_fd) };
 
-    let slave_name = std::ffi::OsStr::from_bytes(name.to_bytes()).into();
-    Ok(PtyPair { master, slave, slave_name })
+    Ok(PtyPair { master, slave })
 }

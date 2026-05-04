@@ -6,25 +6,16 @@ use crate::model::Config;
 use super::line::{Expr, FileId, LineCtx, Literal, ParseError, Span, Stmt, parse_line};
 use super::lower::{ConfigBuilder, ConfigError};
 
-#[derive(Debug)]
-pub struct SourceFile {
-    pub path: PathBuf,
-}
-
 #[derive(Debug, Default)]
 pub struct SourceMap {
-    files: Vec<SourceFile>,
+    files: Vec<PathBuf>,
 }
 
 impl SourceMap {
     pub fn add_file(&mut self, path: PathBuf) -> FileId {
         let id = FileId(self.files.len());
-        self.files.push(SourceFile { path });
+        self.files.push(path);
         id
-    }
-
-    pub fn path(&self, id: FileId) -> &Path {
-        &self.files[id.0].path
     }
 }
 

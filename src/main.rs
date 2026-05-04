@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)]
+
 mod config;
 mod model;
 mod runtime;
@@ -124,7 +126,7 @@ try '--help' for more info
     }
 
     let config_path = config_path(&cli)?;
-    let config = ConfigLoader::new().parse_file(config_path.path.as_ref())?;
+    let config = ConfigLoader::new().parse_file(config_path.as_ref())?;
 
     if cli.check_config {
         return Ok(());

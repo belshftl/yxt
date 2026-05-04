@@ -76,16 +76,6 @@ pub fn classify_c1(byte: u8) -> Option<ControlPrefix> {
     }
 }
 
-pub fn classify_control_prefix(buf: &[u8], accept_c1: bool) -> Option<ControlPrefix> {
-    if let Some(prefix) = classify_esc_prefixed(buf) {
-        Some(prefix)
-    } else if accept_c1 {
-        buf.first().and_then(|b| classify_c1(*b))
-    } else {
-        None
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CsiSeq<'a> {
     pub raw: &'a [u8],
@@ -511,18 +501,6 @@ mod tests {
         assert_eq!(classify_c1(0x80), None);
         assert_eq!(classify_c1(0x91), None);
         assert_eq!(classify_c1(b'['), None);
-    }
-
-    #[test]
-    fn classify_control_prefix_is_c1_gated() {
-        assert_eq!(classify_control_prefix(b"\x1b[?1h", false), Some(ControlPrefix::Csi));
-        assert_eq!(classify_control_prefix(b"\x1b[?1h", true), Some(ControlPrefix::Csi));
-
-        assert_eq!(classify_control_prefix(b"\x9b?1h", false), None);
-        assert_eq!(classify_control_prefix(b"\x9b?1h", true), Some(ControlPrefix::Csi));
-
-        assert_eq!(classify_control_prefix(b"\x9d0;title\x9c", false), None);
-        assert_eq!(classify_control_prefix(b"\x9d0;title\x9c", true), Some(ControlPrefix::String(StringControlKind::Osc)));
     }
 
     #[test]

@@ -643,23 +643,6 @@ impl<'a> Cursor<'a> {
 
         Ok(args)
     }
-
-    fn parse_call_expr(&mut self) -> Result<Expr, ParseError> {
-        self.skip_ws();
-
-        let start = self.pos;
-        let name = self.parse_ident()?.to_owned();
-
-        self.skip_ws();
-
-        let args = self.parse_call_args_after_open_paren()?;
-
-        Ok(Expr::Call {
-            name,
-            args,
-            span: self.span_from(start),
-        })
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

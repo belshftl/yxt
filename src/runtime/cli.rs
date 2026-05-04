@@ -53,18 +53,6 @@ impl Cli {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigPathKind {
-    Explicit,
-    Implicit,
-}
-
-#[derive(Debug, Clone)]
-pub struct ResolvedConfigPath<'a> {
-    pub path: Cow<'a, Path>,
-    pub kind: ConfigPathKind,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigPathError {
     #[error("no command was provided")]
@@ -89,12 +77,9 @@ pub enum ConfigPathError {
     },
 }
 
-pub fn config_path<'a>(cli: &'a Cli) -> Result<ResolvedConfigPath<'a>, ConfigPathError> {
+pub fn config_path<'a>(cli: &'a Cli) -> Result<Cow<'a, Path>, ConfigPathError> {
     if let Some(path) = &cli.config {
-        return Ok(ResolvedConfigPath {
-            path: Cow::Borrowed(path.as_path()),
-            kind: ConfigPathKind::Explicit,
-        });
+        return Ok(Cow::Borrowed(path));
     }
 
     if cli.command.is_empty() {
@@ -110,10 +95,7 @@ pub fn config_path<'a>(cli: &'a Cli) -> Result<ResolvedConfigPath<'a>, ConfigPat
     } else if !implicit_path.exists() {
         Err(ConfigPathError::MissingImplicitConfig { implicit_path })
     } else {
-        Ok(ResolvedConfigPath {
-            path: Cow::Owned(implicit_path),
-            kind: ConfigPathKind::Implicit,
-        })
+        Ok(Cow::Owned(implicit_path))
     }
 }
 

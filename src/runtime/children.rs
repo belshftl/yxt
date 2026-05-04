@@ -177,14 +177,6 @@ pub struct ServiceManager {
 }
 
 impl ServiceManager {
-    pub fn new(services: Vec<ServiceChild>, shutdown_grace: Duration) -> Self {
-        Self {
-            services,
-            shutdown_grace,
-            shutting_down: false,
-        }
-    }
-
     pub fn start(services: &Vec<Service>, spawn_options: ChildSpawnOptions, shutdown_grace: Duration) -> Result<Self, ServiceError> {
         let mut manager = Self {
             services: Vec::new(),

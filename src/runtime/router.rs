@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-use crate::model::{
-    Action, CharPair, Config, Event, GroupId, KeyEventKind, KeyPattern, Mods, ModsPattern,
-    Payload, PayloadKind, Source, Target, Token, TokenPattern, TokenPayload,
-};
+use crate::model::*;
 
 #[derive(Debug, Clone, Copy)]
 pub enum RouteInput<'a> {
@@ -38,24 +35,26 @@ pub enum RouteError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RouteEntry {
+    from: Source,
+    to: Target,
+    attrs: MappingAttrs,
+}
+
 #[derive(Debug)]
 pub struct Router {
     entries: Vec<RouteEntry>,
     group_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RouteEntry {
-    from: Source,
-    to: Target,
-}
-
 impl Router {
     pub fn new(config: &Config) -> Self {
         Self {
-            entries: config.mappings.iter().map(|mapping| RouteEntry {
-                from: mapping.from.clone(),
-                to: mapping.to.clone(),
+            entries: config.mappings.iter().map(|m| RouteEntry {
+                from: m.from.clone(),
+                to: m.to.clone(),
+                attrs: m.attrs,
             }).collect(),
             group_count: config.groups.len(),
         }
@@ -76,6 +75,12 @@ impl Router {
                 continue;
             };
             ctx.matched = true;
+            if entry.attrs.passthrough {
+                let RouteInput::Token(t) = input else {
+                    panic!("passthrough is only valid for token sources, this should've gotten caught by lower validation");
+                };
+                ctx.effects.push(RouteEffect::Token(t.clone()));
+            }
             self.fire_target(&entry.to, payload, ctx)?;
         }
         Ok(())
@@ -949,6 +954,109 @@ key(' '~' ', any) => inherit_key(' '~' ')
                 mods: Mods::SHIFT,
                 kind: KeyEventKind::Press,
             })],
+        );
+    }
+
+    #[test]
+    fn passthrough_preserves_input_then_fires_target() {
+        let router = router(r#"
+@version 1
+passthrough! key(f1, ctrl) => sh("xyz")
+"#);
+
+        let input = Token::Key {
+            key: Key::Function(1),
+            mods: Mods::CTRL,
+            kind: KeyEventKind::Press,
+        };
+
+        let result = fire_token(&router, &input);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![
+                RouteEffect::Token(input.clone()),
+                RouteEffect::Action(Action::Command(CommandSpec::Shell {
+                    command: "xyz".to_owned(),
+                })),
+            ],
+        );
+    }
+
+    #[test]
+    fn passthrough_token_mapping_emits_original_token_before_target_effect() {
+        let router = router(r#"
+@version 1
+passthrough! key('x'~'X', any) => send_key('y')
+"#);
+
+        let input = Token::Utf8 {
+            ch: 'X',
+            mods: Mods::CTRL,
+            kind: KeyEventKind::Repeat,
+        };
+
+        let result = fire_token(&router, &input);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![
+                RouteEffect::Token(input.clone()),
+                RouteEffect::Token(Token::Utf8 {
+                    ch: 'y',
+                    mods: Mods::EMPTY,
+                    kind: KeyEventKind::Repeat,
+                }),
+            ],
+        );
+    }
+
+    #[test]
+    fn passthrough_preserves_release_even_when_non_token_target_is_suppressed() {
+        let router = router(r#"
+@version 1
+passthrough! key(f1, ctrl) => sh("should not run on release")
+"#);
+
+        let input = Token::Key {
+            key: Key::Function(1),
+            mods: Mods::CTRL,
+            kind: KeyEventKind::Release,
+        };
+
+        let result = fire_token(&router, &input);
+
+        assert!(result.matched);
+        assert_eq!(result.effects, vec![RouteEffect::Token(input.clone())]);
+    }
+
+    #[test]
+    fn passthrough_does_not_remap_emitted_token() {
+        let router = router(r#"
+@version 1
+passthrough! key(f1) => send_key('x')
+key(f1) => send_key('y')
+key('x'~'X') => sh("passthrough/result tokens must not re-enter router")
+"#);
+
+        let input = Token::Key {
+            key: Key::Function(1),
+            mods: Mods::EMPTY,
+            kind: KeyEventKind::Press,
+        };
+
+        let result = fire_token(&router, &input);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![
+                RouteEffect::Token(input),
+                RouteEffect::Token(Token::press_utf8('x', Mods::EMPTY)),
+                RouteEffect::Token(Token::press_utf8('y', Mods::EMPTY)),
+            ],
         );
     }
 

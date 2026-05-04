@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 
-use std::collections::VecDeque;
 use std::os::fd::AsRawFd;
 
 #[derive(Debug)]
@@ -184,13 +183,6 @@ pub fn read_to_queue<F: AsRawFd + ?Sized>(fd: &F, q: &mut ByteQueue) -> std::io:
             return Ok(ReadToQueueResult::Success { offset, len });
         }
         unreachable!();
-    }
-}
-
-pub fn read_pty<F: AsRawFd + ?Sized>(fd: &F, buf: &mut [u8]) -> std::io::Result<ReadResult> {
-    match read(fd, buf) {
-        Err(e) if is_pty_hangup(&e) => Ok(ReadResult::Eof),
-        other => other,
     }
 }
 

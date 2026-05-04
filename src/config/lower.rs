@@ -130,6 +130,11 @@ pub enum ConfigError {
         span: Span,
     },
 
+    #[error("'passthrough!' mapping attribute is only valid for token sources")]
+    InvalidPassthroughSource {
+        span: Span,
+    },
+
     #[error("pair expressions are not supported here")]
     PairUnsupported {
         span: Span,
@@ -215,7 +220,6 @@ pub enum ConfigError {
 
 #[derive(Debug)]
 pub struct ConfigBuilder {
-    protocol: Option<ProtocolPolicy>,
     options: Options,
     groups: GroupTable,
     mappings: Vec<Mapping>,
@@ -226,7 +230,6 @@ pub struct ConfigBuilder {
 impl Default for ConfigBuilder {
     fn default() -> Self {
         Self {
-            protocol: None,
             options: Options::default(),
             groups: GroupTable::default(),
             mappings: Vec::new(),
@@ -248,7 +251,6 @@ impl ConfigBuilder {
 
     pub fn finish(self) -> Result<Config, ConfigError> {
         Ok(Config {
-            protocol: self.protocol.unwrap_or_default(),
             options: self.options,
             groups: self.groups,
             mappings: self.mappings,
@@ -256,12 +258,7 @@ impl ConfigBuilder {
         })
     }
 
-    fn apply_directive(
-        &mut self,
-        name: String,
-        args: Vec<Expr>,
-        span: Span,
-    ) -> Result<(), ConfigError> {
+    fn apply_directive(&mut self, name: String, args: Vec<Expr>, span: Span) -> Result<(), ConfigError> {
         match name.as_str() {
             "protocol" => todo!(),
             "service" => self.apply_service(args, span),
@@ -311,12 +308,7 @@ impl ConfigBuilder {
         Ok(())
     }
 
-    fn apply_definition(
-        &mut self,
-        kind: String,
-        args: Vec<Expr>,
-        span: Span,
-    ) -> Result<(), ConfigError> {
+    fn apply_definition(&mut self, kind: String, args: Vec<Expr>, span: Span) -> Result<(), ConfigError> {
         match kind.as_str() {
             "group" => {
                 let name = expect_one_string(args).map_err(|_| ConfigError::BadDefinitionArgs {
@@ -339,21 +331,20 @@ impl ConfigBuilder {
         rhs: Expr,
         span: Span,
     ) -> Result<(), ConfigError> {
-        let _attrs = lower_mapping_attrs(attrs)?;
-
         let (from_expr, to_expr) = match op {
             MappingOp::Right => (lhs, rhs),
             MappingOp::Left => (rhs, lhs),
         };
         let from = self.lower_source(from_expr)?;
         let to = self.lower_target(to_expr)?;
+        let attrs = lower_mapping_attrs(attrs, &from)?;
         let required = to.requires_payload();
         if let Some(required) = required && from.provides_payload() != Some(required) {
             Err(ConfigError::TargetRequiresPayload { required, span })
         } else if let (Source::Group(a), Target::Group(b)) = (&from, &to) && a == b {
             Err(ConfigError::GroupSelfMap { span })
         } else {
-            self.mappings.push(Mapping { from, to, span });
+            self.mappings.push(Mapping { from, to, attrs, span });
             Ok(())
         }
     }
@@ -400,22 +391,23 @@ impl ConfigBuilder {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct MappingAttrs {
-    // TODO
-}
-
-fn lower_mapping_attrs(attrs: Vec<MappingAttr>) -> Result<MappingAttrs, ConfigError> {
-    let out = MappingAttrs::default();
+fn lower_mapping_attrs(attrs: Vec<MappingAttr>, from: &Source) -> Result<MappingAttrs, ConfigError> {
+    let mut out = MappingAttrs::default();
     for attr in attrs {
         match attr.name.as_str() {
-            // TODO
-            _ => {
-                return Err(ConfigError::UnsupportedMappingAttr {
-                    name: attr.name,
-                    span: attr.span,
-                });
+            "passthrough" => {
+                if !attr.args.is_empty() {
+                    return Err(ConfigError::BadMappingAttrArgs { kind: "passthrough", span: attr.span });
+                }
+                if out.passthrough {
+                    return Err(ConfigError::DuplicateMappingAttr { kind: "passthrough", span: attr.span });
+                }
+                if !matches!(from, Source::Token(_)) {
+                    return Err(ConfigError::InvalidPassthroughSource { span: attr.span });
+                }
+                out.passthrough = true;
             }
+            _ => return Err(ConfigError::UnsupportedMappingAttr { name: attr.name, span: attr.span }),
         }
     }
     Ok(out)
@@ -473,11 +465,7 @@ fn lower_inherit_key(args: Vec<Expr>, span: Span) -> Result<Target, ConfigError>
     }))
 }
 
-fn lower_key_pattern_arg(
-    expr: Expr,
-    kind: &'static str,
-    span: Span,
-) -> Result<KeyPattern, ConfigError> {
+fn lower_key_pattern_arg(expr: Expr, kind: &'static str, span: Span) -> Result<KeyPattern, ConfigError> {
     match expr {
         Expr::Ident { name, .. } => Ok(KeyPattern::Named(lower_key_name(&name, span)?)),
         Expr::Pair { .. } => Ok(KeyPattern::CharPair(lower_char_pair_expr(expr)?)),
@@ -526,10 +514,7 @@ fn lower_mod_pattern(args: Vec<Expr>, span: Span) -> Result<ModsPattern, ConfigE
     Ok(ModsPattern::AnyOf(vec![mods]))
 }
 
-fn lower_mods(
-    args: impl IntoIterator<Item = Expr>,
-    span: Span,
-) -> Result<Mods, ConfigError> {
+fn lower_mods(args: impl IntoIterator<Item = Expr>, span: Span) -> Result<Mods, ConfigError> {
     let mut mods = Mods::EMPTY;
 
     for arg in args {
@@ -747,6 +732,12 @@ mod tests {
     use super::*;
 
     use crate::config::line::{FileId, LineCtx};
+
+    fn no_attrs() -> MappingAttrs {
+        MappingAttrs {
+            passthrough: false,
+        }
+    }
 
     fn sp() -> Span {
         Span {
@@ -1038,6 +1029,7 @@ mod tests {
                     mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
                 }),
                 to: Target::Token(Token::press_utf8('x', Mods::EMPTY)),
+                attrs: no_attrs(),
                 span: sp(),
             }],
         );
@@ -1230,6 +1222,7 @@ mod tests {
                     mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
                 }),
                 to: Target::Group(reload),
+                attrs: no_attrs(),
                 span: sp(),
             },
         );
@@ -1492,5 +1485,53 @@ mod tests {
             call("send_key", vec![ch('x')]),
         )]);
         assert!(matches!(e, ConfigError::UnsupportedMappingAttr { name, .. } if name == "xyz"));
+    }
+
+    #[test]
+    fn passthrough_attr_is_stored_on_token_source_mapping() {
+        let config = finish(vec![map_with_attrs(
+            vec![attr("passthrough", vec![])],
+            call("key", vec![ident("f1")]),
+            call("send_key", vec![ch('x')]),
+        )]).unwrap();
+        assert_eq!(config.mappings.len(), 1);
+        assert!(config.mappings[0].attrs.passthrough);
+    }
+
+    #[test]
+    fn passthrough_requires_token_source() {
+        let e = err(vec![
+            define("group", vec![string("g")]),
+            map_with_attrs(
+                vec![attr("passthrough", vec![])],
+                call("group", vec![string("g")]),
+                call("send_key", vec![ch('x')]),
+            ),
+        ]);
+        assert!(matches!(e, ConfigError::InvalidPassthroughSource { .. }));
+
+        let e = err(vec![map_with_attrs(
+            vec![attr("passthrough", vec![])],
+            call("sockdata_utf8", vec![string("reload")]),
+            call("sh", vec![string("reload")]),
+        )]);
+        assert!(matches!(e, ConfigError::InvalidPassthroughSource { .. }));
+    }
+
+    #[test]
+    fn passthrough_rejects_args_and_duplicates() {
+        let e = err(vec![map_with_attrs(
+            vec![attr("passthrough", vec![int(1)])],
+            call("key", vec![ident("f1")]),
+            call("send_key", vec![ch('x')]),
+        )]);
+        assert!(matches!(e, ConfigError::BadMappingAttrArgs { kind: "passthrough", .. }));
+
+        let e = err(vec![map_with_attrs(
+            vec![attr("passthrough", vec![]), attr("passthrough", vec![])],
+            call("key", vec![ident("f1")]),
+            call("send_key", vec![ch('x')]),
+        )]);
+        assert!(matches!(e, ConfigError::DuplicateMappingAttr { kind: "passthrough", .. }));
     }
 }

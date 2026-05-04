@@ -5,29 +5,6 @@ use std::{collections::HashMap};
 use crate::config::{line::Span, options::Options};
 
 // ================================================================================================
-// protocol
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Protocol {
-    Legacy = 0,
-    Kitty = 1,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ProtocolPolicy {
-    pub exact: Option<Protocol>,
-    pub minimum: Protocol,
-}
-
-impl Default for ProtocolPolicy {
-    fn default() -> Self {
-        Self {
-            exact: None,
-            minimum: Protocol::Legacy,
-        }
-    }
-}
-
-// ================================================================================================
 // keys/mods
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CharPair {
@@ -317,10 +294,6 @@ impl Payload {
             Self::Token(payload) => Some(payload),
         }
     }
-
-    pub fn token_kind(self) -> Option<KeyEventKind> {
-        self.token().map(|p| p.kind)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -440,10 +413,16 @@ impl Target {
 
 // ================================================================================================
 // other primary config concepts
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MappingAttrs {
+    pub passthrough: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mapping {
     pub from: Source,
     pub to: Target,
+    pub attrs: MappingAttrs,
     pub span: Span,
 }
 
@@ -455,7 +434,6 @@ pub struct Service {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub protocol: ProtocolPolicy,
     pub options: Options,
     pub groups: GroupTable,
     pub mappings: Vec<Mapping>,
