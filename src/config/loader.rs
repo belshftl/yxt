@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 
+use std::borrow::Cow;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use crate::model::Config;
@@ -7,20 +9,55 @@ use super::line::{Expr, FileId, LineCtx, Literal, ParseError, Span, Stmt, parse_
 use super::lower::{ConfigBuilder, ConfigError};
 
 #[derive(Debug, Default)]
+pub struct SourceFile {
+    pub path: PathBuf,
+    pub text: String,
+    line_starts: Vec<usize>,
+}
+
+impl SourceFile {
+    pub fn line(&self, line: usize) -> Option<&str> {
+        let start = *self.line_starts.get(line)?;
+        let end = self.line_starts.get(line + 1).copied().unwrap_or(self.text.len());
+        let line = &self.text[start..end];
+        Some(line.trim_end_matches(['\n', '\r']))
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct SourceMap {
-    files: Vec<PathBuf>,
+    files: Vec<SourceFile>,
 }
 
 impl SourceMap {
-    pub fn add_file(&mut self, path: PathBuf) -> FileId {
+    pub fn add_file(&mut self, path: PathBuf, text: String) -> FileId {
         let id = FileId(self.files.len());
-        self.files.push(path);
+        let line_starts = line_starts(&text);
+        self.files.push(SourceFile { path, text, line_starts });
         id
     }
 
     pub fn path(&self, id: FileId) -> &Path {
-        &self.files[id.0]
+        &self.files[id.0].path
     }
+
+    pub fn text(&self, id: FileId) -> &str {
+        &self.files[id.0].text
+    }
+
+    pub fn line(&self, ctx: LineCtx) -> Option<&str> {
+        self.files.get(ctx.file.0)?.line(ctx.line)
+    }
+}
+
+fn line_starts(text: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (i, b) in text.bytes().enumerate() {
+        if b == b'\n' && i + 1 < text.len() {
+            starts.push(i + 1);
+        }
+    }
+    starts
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -34,7 +71,7 @@ pub enum ConfigLoadError {
     #[error("unsupported version '{version}'")]
     UnsupportedVersion { version: u32, span: Span },
 
-    #[error("missing @version directive")]
+    #[error("file '{path}' is missing @version directive")]
     MissingVersion { path: PathBuf },
 
     #[error("@version directive must be the first statement in the root config")]
@@ -78,7 +115,7 @@ impl ConfigLoader {
         }
     }
 
-    pub fn parse_file(mut self, path: &Path) -> Result<Config, ConfigLoadError> {
+    pub fn parse_file(&mut self, path: &Path) -> Result<Config, ConfigLoadError> {
         let path = std::fs::canonicalize(path).map_err(|e| ConfigLoadError::Io {
             path: path.to_owned(),
             err: e,
@@ -87,7 +124,60 @@ impl ConfigLoader {
         if self.version.is_none() {
             return Err(ConfigLoadError::MissingVersion { path });
         }
-        self.builder.finish().map_err(ConfigLoadError::Semantic)
+        self.builder.take_finish().map_err(ConfigLoadError::Semantic)
+    }
+
+    pub fn report_err(&self, err: ConfigLoadError) {
+        match err {
+            ConfigLoadError::UnsupportedVersion { version: _, span }
+                | ConfigLoadError::VersionMustBeFirst { span }
+                | ConfigLoadError::DuplicateVersion { span }
+                | ConfigLoadError::VersionMismatch { expected: _, got: _, span }
+                | ConfigLoadError::BadVersionArgs { span }
+                | ConfigLoadError::BadIncludeArgs { span } => self.report_err_span(&err, span),
+            ConfigLoadError::Syntax(ParseError { kind, span }) => self.report_err_span(&kind, span),
+            ConfigLoadError::Semantic(ConfigError { kind, span }) => self.report_err_span(&kind, span),
+            ConfigLoadError::MissingVersion { path } => {
+                let term = std::io::stderr().is_terminal();
+                let reset = if term { "\x1b[0m" } else { "" };
+                let bold = if term { "\x1b[1m" } else { "" };
+                let err_color = if term { "\x1b[1;31m" } else { "" };
+                let path = if let Some(home) = std::env::var_os("HOME") && let Ok(rest) = path.strip_prefix(Path::new(&home)) {
+                    Path::new("~").join(rest)
+                } else {
+                    path
+                };
+                eprintln!(
+                    "{bold}{}{reset}: {err_color}error: {reset}missing @version directive",
+                    path.display(),
+                );
+            }
+            _ => eprintln!("{err}"),
+        }
+    }
+
+    fn report_err_span(&self, err: &impl std::fmt::Display, span: Span) {
+        let term = std::io::stderr().is_terminal();
+        let reset = if term { "\x1b[0m" } else { "" };
+        let bold = if term { "\x1b[1m" } else { "" };
+        let err_color = if term { "\x1b[1;31m" } else { "" };
+
+        let mut filepath = Cow::Borrowed(self.sources.path(span.ctx.file));
+        if let Some(home) = std::env::var_os("HOME") && let Ok(rest) = filepath.strip_prefix(Path::new(&home)) {
+            filepath = Cow::Owned(Path::new("~").join(rest));
+        }
+
+        let line = self.sources.line(span.ctx).unwrap();
+        let line_no = format!("{:4}", span.ctx.line + 1);
+        eprintln!(
+            "{bold}{}:{}:{}{reset}: {err_color}error: {reset}{err}",
+            filepath.display(), span.ctx.line + 1, span.start + 1
+        );
+        eprintln!(" {line_no} | {line}");
+        eprintln!(
+            " {} | {}{err_color}{}{reset}",
+            " ".repeat(line_no.len()), " ".repeat(span.start), "^".repeat(span.end.strict_sub(span.start).max(1))
+        );
     }
 
     fn parse_one_file(&mut self, path: &Path, is_root: bool) -> Result<(), ConfigLoadError> {
@@ -104,16 +194,15 @@ impl ConfigLoader {
         }
         self.include_stack.push(path.clone());
 
-        let file = self.sources.add_file(path.clone());
         let text = std::fs::read_to_string(&path).map_err(|e| ConfigLoadError::Io {
             path: path.clone(),
             err: e,
         })?;
+        let file = self.sources.add_file(path.clone(), text.clone());
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
 
         let mut seen_non_version_stmt_here = false;
-        for (idx, line) in text.lines().enumerate() {
-            let line_no = idx + 1;
+        for (line_no, line) in text.lines().enumerate() {
             let ctx = LineCtx {
                 file,
                 line: line_no,

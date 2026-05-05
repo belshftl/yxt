@@ -87,13 +87,16 @@ fn main() {
     // use a tmp var because otherwise it's `temporary value dropped while borrowed`
     let a0_binding = std::env::args_os().next();
     let argv0 = a0_binding.as_deref().map(OsStr::to_string_lossy).unwrap_or(Cow::Borrowed("yxt"));
-    if let Err(e) = run(argv0.as_ref()) {
-        eprintln!("{argv0}: {e}");
-        std::process::exit(1);
+    match run(argv0.as_ref()) {
+        Ok(rv) => std::process::exit(rv),
+        Err(e) => {
+            eprintln!("{argv0}: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
-fn run(argv0: &str) -> Result<(), AppError> {
+fn run(argv0: &str) -> Result<i32, AppError> {
     try_pledge("stdio rpath wpath cpath unix tty proc exec", None)?;
 
     let cli = Cli::parse()?;
@@ -111,30 +114,37 @@ options:
   -h, --help                display this help and exit
   -V, --version             output version information and exit
 ");
-        return Ok(());
+        return Ok(0);
     }
     if cli.version {
         eprintln!("yxt v0.1.0-alpha");
-        return Ok(());
+        return Ok(0);
     }
     if cli.command.is_empty() {
         eprint!("\
 usage: {argv0} [options] command [args ...]
 try '--help' for more info
 ");
-        return Ok(());
+        return Ok(2);
     }
 
     let config_path = config_path(&cli)?;
-    let config = ConfigLoader::new().parse_file(config_path.as_ref())?;
+    let mut loader = ConfigLoader::new();
+    let config = match loader.parse_file(config_path.as_ref()) {
+        Ok(c) => c,
+        Err(e) => {
+            loader.report_err(e);
+            return Ok(2);
+        }
+    };
 
     if cli.check_config {
-        return Ok(());
+        return Ok(0);
     }
 
     if cli.dump_config {
         println!("{config:#?}");
-        return Ok(());
+        return Ok(0);
     }
 
     let sock_path = default_sock_path("yxt")?;
@@ -428,5 +438,5 @@ try '--help' for more info
         }
     }
 
-    Ok(())
+    Ok(0)
 }

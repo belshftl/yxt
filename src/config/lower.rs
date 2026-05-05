@@ -221,6 +221,10 @@ impl ConfigBuilder {
         })
     }
 
+    pub fn take_finish(&mut self) -> Result<Config, ConfigError> {
+        std::mem::take(self).finish()
+    }
+
     fn apply_directive(&mut self, name: String, args: Vec<Expr>, span: Span) -> Result<(), ConfigError> {
         match name.as_str() {
             "protocol" => todo!(),
