@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::line::{Literal, Span};
-use super::lower::{ConfigError, LiteralKind};
+use super::lower::{ConfigError, ErrorKind, LiteralKind};
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -35,7 +35,7 @@ impl Options {
             "partial_esc_timeout" => self.partial_esc_timeout_ms = expect_int(value, span)?,
             "partial_st_timeout" => self.partial_st_timeout_ms = expect_int(value, span)?,
             "max_pending_decoder_bytes" => self.max_pending_decoder_bytes = expect_int(value, span)?,
-            _ => return Err(ConfigError::UnknownOption { name, span }),
+            _ => return Err(ConfigError { kind: ErrorKind::UnknownOption { name }, span }),
         }
         Ok(())
     }
@@ -44,9 +44,11 @@ impl Options {
 fn expect_string(value: Literal, span: Span) -> Result<String, ConfigError> {
     match value {
         Literal::String(v) => Ok(v),
-        other => Err(ConfigError::WrongLiteralType {
-            expected: LiteralKind::String,
-            got: LiteralKind::of(&other),
+        other => Err(ConfigError {
+            kind: ErrorKind::WrongLiteralType {
+                expected: LiteralKind::String,
+                got: LiteralKind::of(&other),
+            },
             span,
         }),
     }
@@ -55,9 +57,11 @@ fn expect_string(value: Literal, span: Span) -> Result<String, ConfigError> {
 fn expect_bool(value: Literal, span: Span) -> Result<bool, ConfigError> {
     match value {
         Literal::Bool(v) => Ok(v),
-        other => Err(ConfigError::WrongLiteralType {
-            expected: LiteralKind::Bool,
-            got: LiteralKind::of(&other),
+        other => Err(ConfigError {
+            kind: ErrorKind::WrongLiteralType {
+                expected: LiteralKind::Bool,
+                got: LiteralKind::of(&other),
+            },
             span,
         }),
     }
@@ -66,9 +70,11 @@ fn expect_bool(value: Literal, span: Span) -> Result<bool, ConfigError> {
 fn expect_int(value: Literal, span: Span) -> Result<i32, ConfigError> {
     match value {
         Literal::Int(v) => Ok(v),
-        other => Err(ConfigError::WrongLiteralType {
-            expected: LiteralKind::Int,
-            got: LiteralKind::of(&other),
+        other => Err(ConfigError {
+            kind: ErrorKind::WrongLiteralType {
+                expected: LiteralKind::Int,
+                got: LiteralKind::of(&other),
+            },
             span,
         }),
     }

@@ -17,6 +17,10 @@ impl SourceMap {
         self.files.push(path);
         id
     }
+
+    pub fn path(&self, id: FileId) -> &Path {
+        &self.files[id.0]
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,7 +43,7 @@ pub enum ConfigLoadError {
     #[error("duplicate @version directive in file")]
     DuplicateVersion { span: Span },
 
-    #[error("@version directive versions don't match across included files")]
+    #[error("@version directive versions don't match across included files: expected {expected}, got {got}")]
     VersionMismatch { expected: u32, got: u32, span: Span },
 
     #[error("invalid arguments for directive '@version'")]
@@ -223,6 +227,7 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::config::lower::ErrorKind;
     use crate::model::{
         Action, CommandSpec, Event, Key, KeyPattern, Mods, ModsPattern, Source, Target, TokenPattern,
     };
@@ -405,7 +410,9 @@ key(f1) => group("x")
 "#);
 
         let err = parse_err(&root);
-        assert!(matches!(err, ConfigLoadError::Semantic(ConfigError::UnknownGroup { name, .. }) if name == "x"));
+        assert!(matches!(err, ConfigLoadError::Semantic(ConfigError {
+            kind: ErrorKind::UnknownGroup { name }, ..
+        }) if name == "x"));
     }
 
     #[test]
@@ -588,7 +595,9 @@ define group "x"
 "#);
 
         let err = parse_err(&root);
-        assert!(matches!(err, ConfigLoadError::Semantic(ConfigError::DuplicateGroup { name, .. }) if name == "x"));
+        assert!(matches!(err, ConfigLoadError::Semantic(ConfigError {
+            kind: ErrorKind::DuplicateGroup { name }, ..
+        }) if name == "x"));
     }
 
     #[test]
@@ -658,7 +667,7 @@ key(nope) => send_key('x')
 
         let err = parse_err(&root);
         match err {
-            ConfigLoadError::Semantic(ConfigError::UnknownKey { name, span }) => {
+            ConfigLoadError::Semantic(ConfigError { kind: ErrorKind::UnknownKey { name }, span }) => {
                 assert_eq!(name, "nope");
                 assert_eq!(span.ctx.line, 4);
             }

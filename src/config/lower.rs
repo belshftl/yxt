@@ -26,196 +26,159 @@ impl LiteralKind {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
-pub enum ConfigError {
+pub enum ErrorKind {
     #[error("unknown directive '@{name}'")]
     UnknownDirective {
         name: String,
-        span: Span,
     },
 
     #[error("invalid arguments for directive '@{kind}'")]
     BadDirectiveArgs {
         kind: &'static str,
-        span: Span,
     },
 
     #[error("duplicate of directive '@{kind}' is not allowed: {reason}")]
     DuplicateDirective {
         kind: &'static str,
         reason: &'static str,
-        span: Span,
     },
 
     #[error("unknown command kind '{kind}'")]
     UnknownCommandKind {
         kind: String,
-        span: Span,
     },
 
     #[error("invalid arguments for command of kind '{kind}'")]
     BadCommandArgs {
         kind: &'static str,
-        span: Span,
     },
 
     #[error("command cannot be empty")]
-    EmptyCommand {
-        span: Span,
-    },
+    EmptyCommand,
 
     #[error("unknown definition kind '{kind}'")]
     UnknownDefinition {
         kind: String,
-        span: Span,
     },
 
     #[error("invalid arguments for definition '{kind}'")]
     BadDefinitionArgs {
         kind: &'static str,
-        span: Span,
     },
 
     #[error("duplicate group '{name}'")]
     DuplicateGroup {
         name: String,
-        span: Span,
     },
 
     #[error("unknown group '{name}'")]
     UnknownGroup {
         name: String,
-        span: Span,
     },
 
     #[error("unknown option '{name}'")]
     UnknownOption {
         name: String,
-        span: Span,
     },
 
     #[error("wrong literal type: expected '{expected:?}', got '{got:?}'")]
     WrongLiteralType {
         expected: LiteralKind,
         got: LiteralKind,
-        span: Span,
     },
 
     #[error("unknown entity '{name}'")]
     UnknownEntity {
         name: String,
-        span: Span,
     },
 
     #[error("invalid arguments for entity '{kind}'")]
     BadEntityArgs {
         kind: &'static str,
-        span: Span,
     },
 
     #[error("unknown mapping attribute '{name}'")]
     UnsupportedMappingAttr {
         name: String,
-        span: Span,
     },
 
     #[error("invalid arguments for mapping attribute '{kind}'")]
     BadMappingAttrArgs {
         kind: &'static str,
-        span: Span,
     },
 
     #[error("duplicate mapping attribute '{kind}'")]
     DuplicateMappingAttr {
         kind: &'static str,
-        span: Span,
     },
 
     #[error("'passthrough!' mapping attribute is only valid for token sources")]
-    InvalidPassthroughSource {
-        span: Span,
-    },
+    InvalidPassthroughSource,
 
     #[error("pair expressions are not supported here")]
-    PairUnsupported {
-        span: Span,
-    },
+    PairUnsupported,
 
     #[error("char-pair key must contain two character literals")]
-    CharPairKeyNeedsChars {
-        span: Span,
-    },
+    CharPairKeyNeedsChars,
 
     #[error("unknown signal '{name}'")]
     UnknownSignal {
         name: String,
-        span: Span,
     },
 
     #[error("signal '{name}' is {reason}")]
     UnsupportedSignal {
         name: String,
         reason: &'static str,
-        span: Span,
     },
 
     #[error("unknown key '{name}'")]
     UnknownKey {
         name: String,
-        span: Span,
     },
 
     #[error("unknown modifier '{name}'")]
     UnknownModifier {
         name: String,
-        span: Span,
     },
 
     #[error("duplicate modifier '{name}'")]
     DuplicateModifier {
         name: String,
-        span: Span,
     },
 
     #[error("invalid modifier")]
-    BadModifier {
-        span: Span,
-    },
+    BadModifier,
 
     #[error("target-only token constructor cannot be used as mapping source")]
-    SendTokenAsSource {
-        span: Span,
-    },
+    SendTokenAsSource,
 
     #[error("source-only token constructor cannot be used as mapping target")]
-    SourceTokenAsTarget {
-        span: Span,
-    },
+    SourceTokenAsTarget,
 
     #[error("action cannot be used as mapping source")]
-    ActionAsSource {
-        span: Span,
-    },
+    ActionAsSource,
 
     #[error("inherit token cannot be used as mapping source")]
-    InheritTokenAsSource {
-        span: Span,
-    },
+    InheritTokenAsSource,
 
     #[error("event cannot be used as mapping target")]
-    EventAsTarget {
-        span: Span,
-    },
+    EventAsTarget,
 
     #[error("target requires payload of type {required:?} that the mapped source did not provide")]
     TargetRequiresPayload {
         required: PayloadKind,
-        span: Span,
     },
 
     #[error("cannot map a group to itself")]
-    GroupSelfMap {
-        span: Span,
-    },
+    GroupSelfMap,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("byte {}..{}: {kind}", .span.start, .span.end)]
+pub struct ConfigError {
+    pub kind: ErrorKind,
+    pub span: Span,
 }
 
 #[derive(Debug)]
@@ -262,8 +225,8 @@ impl ConfigBuilder {
         match name.as_str() {
             "protocol" => todo!(),
             "service" => self.apply_service(args, span),
-            _ => Err(ConfigError::UnknownDirective {
-                name,
+            _ => Err(ConfigError {
+                kind: ErrorKind::UnknownDirective { name },
                 span,
             }),
         }
@@ -273,36 +236,38 @@ impl ConfigBuilder {
         let mut args = args.into_iter();
 
         let Some(Expr::Literal { value: Literal::String(name), ..}) = args.next() else {
-            return Err(ConfigError::BadDirectiveArgs { kind: "service", span });
+            return Err(ConfigError { kind: ErrorKind::BadDirectiveArgs { kind: "service" }, span });
         };
 
         if name.is_empty() {
-            return Err(ConfigError::BadDirectiveArgs { kind: "service", span });
+            return Err(ConfigError { kind: ErrorKind::BadDirectiveArgs { kind: "service" }, span });
         }
 
         let Some(expr) = args.next() else {
-            return Err(ConfigError::BadDirectiveArgs { kind: "service", span });
+            return Err(ConfigError { kind: ErrorKind::BadDirectiveArgs { kind: "service" }, span });
         };
 
         if args.next().is_some() {
-            return Err(ConfigError::BadDirectiveArgs { kind: "service", span });
+            return Err(ConfigError { kind: ErrorKind::BadDirectiveArgs { kind: "service" }, span });
         }
 
         if !self.sv_names.insert(name.clone()) {
-            return Err(ConfigError::DuplicateDirective {
-                kind: "service",
-                reason: "duplicate service name; services must have unique names",
+            return Err(ConfigError {
+                kind: ErrorKind::DuplicateDirective {
+                    kind: "service",
+                    reason: "duplicate service name; services must have unique names",
+                },
                 span,
             });
         }
 
-        let (call_name, call_args, call_span) = expect_call(expr).map_err(|_| ConfigError::BadDirectiveArgs {
-            kind: "service", span
+        let (call_name, call_args, call_span) = expect_call(expr).map_err(|_| ConfigError {
+            kind: ErrorKind::BadDirectiveArgs { kind: "service" }, span,
         })?;
         let command = match call_name.as_str() {
             "exec" => lower_exec_command(call_args, call_span)?,
             "sh" => lower_shell_command(call_args, call_span)?,
-            _ => return Err(ConfigError::UnknownCommandKind { kind: call_name, span: call_span }),
+            _ => return Err(ConfigError { kind: ErrorKind::UnknownCommandKind { kind: call_name }, span: call_span }),
         };
         self.services.push(Service { name, command });
         Ok(())
@@ -311,15 +276,15 @@ impl ConfigBuilder {
     fn apply_definition(&mut self, kind: String, args: Vec<Expr>, span: Span) -> Result<(), ConfigError> {
         match kind.as_str() {
             "group" => {
-                let name = expect_one_string(args).map_err(|_| ConfigError::BadDefinitionArgs {
-                    kind: "group", span,
+                let name = expect_one_string(args).map_err(|_| ConfigError {
+                    kind: ErrorKind::BadDefinitionArgs { kind: "group" }, span,
                 })?;
                 self.groups.define(name).map_err(|e| match e {
-                    DefineGroupError::Duplicate(name) => ConfigError::DuplicateGroup { name, span }
+                    DefineGroupError::Duplicate(name) => ConfigError { kind: ErrorKind::DuplicateGroup { name }, span }
                 })?;
                 Ok(())
             }
-            _ => Err(ConfigError::UnknownDefinition { kind, span }),
+            _ => Err(ConfigError { kind: ErrorKind::UnknownDefinition { kind }, span }),
         }
     }
 
@@ -340,9 +305,9 @@ impl ConfigBuilder {
         let attrs = lower_mapping_attrs(attrs, &from)?;
         let required = to.requires_payload();
         if let Some(required) = required && from.provides_payload() != Some(required) {
-            Err(ConfigError::TargetRequiresPayload { required, span })
+            Err(ConfigError { kind: ErrorKind::TargetRequiresPayload { required }, span })
         } else if let (Source::Group(a), Target::Group(b)) = (&from, &to) && a == b {
-            Err(ConfigError::GroupSelfMap { span })
+            Err(ConfigError { kind: ErrorKind::GroupSelfMap, span })
         } else {
             self.mappings.push(Mapping { from, to, attrs, span });
             Ok(())
@@ -351,25 +316,25 @@ impl ConfigBuilder {
 
     fn lower_source(&self, expr: Expr) -> Result<Source, ConfigError> {
         let span = expr.span();
-        let (name, args, call_span) = expect_call(expr).map_err(|_| ConfigError::UnknownEntity {
-            name: "<non-call>".to_owned(), span
+        let (name, args, call_span) = expect_call(expr).map_err(|_| ConfigError {
+            kind: ErrorKind::UnknownEntity { name: "<non-call>".to_owned() }, span
         })?;
         match name.as_str() {
             "signal" => lower_signal_source(args, call_span),
             "sockdata_utf8" => lower_sockdata_utf8_source(args, call_span),
             "key" => lower_key_source(args, call_span),
             "group" => Ok(Source::Group(self.lower_group_id(args, call_span)?)),
-            "send_key" => Err(ConfigError::SendTokenAsSource { span }),
-            "inherit_key" => Err(ConfigError::InheritTokenAsSource { span }),
-            "exec" | "sh" => Err(ConfigError::ActionAsSource { span }),
-            _ => Err(ConfigError::UnknownEntity { name, span: call_span }),
+            "send_key" => Err(ConfigError { kind: ErrorKind::SendTokenAsSource, span }),
+            "inherit_key" => Err(ConfigError { kind: ErrorKind::InheritTokenAsSource, span }),
+            "exec" | "sh" => Err(ConfigError { kind: ErrorKind::ActionAsSource, span }),
+            _ => Err(ConfigError { kind: ErrorKind::UnknownEntity { name }, span: call_span }),
         }
     }
 
     fn lower_target(&self, expr: Expr) -> Result<Target, ConfigError> {
         let span = expr.span();
-        let (name, args, call_span) = expect_call(expr).map_err(|_| ConfigError::UnknownEntity {
-            name: "<non-call>".to_owned(), span
+        let (name, args, call_span) = expect_call(expr).map_err(|_| ConfigError {
+            kind: ErrorKind::UnknownEntity { name: "<non-call>".to_owned() }, span
         })?;
         match name.as_str() {
             "send_key" => lower_send_key(args, call_span),
@@ -377,17 +342,19 @@ impl ConfigBuilder {
             "group" => Ok(Target::Group(self.lower_group_id(args, call_span)?)),
             "exec" => Ok(Target::Action(Action::Command(lower_exec_command(args, call_span)?))),
             "sh" => Ok(Target::Action(Action::Command(lower_shell_command(args, call_span)?))),
-            "signal" | "sockdata_utf8" => Err(ConfigError::EventAsTarget { span }),
-            "key" => Err(ConfigError::SourceTokenAsTarget { span }),
-            _ => Err(ConfigError::UnknownEntity { name, span: call_span }),
+            "signal" | "sockdata_utf8" => Err(ConfigError { kind: ErrorKind::EventAsTarget, span }),
+            "key" => Err(ConfigError { kind: ErrorKind::SourceTokenAsTarget, span }),
+            _ => Err(ConfigError { kind: ErrorKind::UnknownEntity { name }, span: call_span }),
         }
     }
 
     fn lower_group_id(&self, args: Vec<Expr>, span: Span) -> Result<GroupId, ConfigError> {
-        let group_name = expect_one_string(args).map_err(|_| ConfigError::BadEntityArgs {
-            kind: "group", span,
+        let name = expect_one_string(args).map_err(|_| ConfigError {
+            kind: ErrorKind::BadEntityArgs { kind: "group" }, span,
         })?;
-        self.groups.lookup(&group_name).ok_or_else(|| ConfigError::UnknownGroup { name: group_name, span })
+        self.groups.lookup(&name).ok_or_else(|| ConfigError {
+            kind: ErrorKind::UnknownGroup { name }, span,
+        })
     }
 }
 
@@ -397,33 +364,33 @@ fn lower_mapping_attrs(attrs: Vec<MappingAttr>, from: &Source) -> Result<Mapping
         match attr.name.as_str() {
             "passthrough" => {
                 if !attr.args.is_empty() {
-                    return Err(ConfigError::BadMappingAttrArgs { kind: "passthrough", span: attr.span });
+                    return Err(ConfigError { kind: ErrorKind::BadMappingAttrArgs { kind: "passthrough" }, span: attr.span });
                 }
                 if out.passthrough {
-                    return Err(ConfigError::DuplicateMappingAttr { kind: "passthrough", span: attr.span });
+                    return Err(ConfigError { kind: ErrorKind::DuplicateMappingAttr { kind: "passthrough" }, span: attr.span });
                 }
                 if !matches!(from, Source::Token(_)) {
-                    return Err(ConfigError::InvalidPassthroughSource { span: attr.span });
+                    return Err(ConfigError { kind: ErrorKind::InvalidPassthroughSource, span: attr.span });
                 }
                 out.passthrough = true;
             }
-            _ => return Err(ConfigError::UnsupportedMappingAttr { name: attr.name, span: attr.span }),
+            _ => return Err(ConfigError { kind: ErrorKind::UnsupportedMappingAttr { name: attr.name }, span: attr.span }),
         }
     }
     Ok(out)
 }
 
 fn lower_signal_source(args: Vec<Expr>, span: Span) -> Result<Source, ConfigError> {
-    let name = expect_one_string(args).map_err(|_| ConfigError::BadEntityArgs {
-        kind: "signal", span,
+    let name = expect_one_string(args).map_err(|_| ConfigError {
+        kind: ErrorKind::BadEntityArgs { kind: "signal" }, span,
     })?;
     let signal = lower_signal_name(&name, span)?;
     Ok(Source::Event(Event::Signal(signal)))
 }
 
 fn lower_sockdata_utf8_source(args: Vec<Expr>, span: Span) -> Result<Source, ConfigError> {
-    let s = expect_one_string(args).map_err(|_| ConfigError::BadEntityArgs {
-        kind: "sockdata_utf8", span,
+    let s = expect_one_string(args).map_err(|_| ConfigError {
+        kind: ErrorKind::BadEntityArgs { kind: "sockdata_utf8" }, span,
     })?;
     Ok(Source::Event(Event::Sockdata(s.as_bytes().to_vec())))
 }
@@ -431,7 +398,7 @@ fn lower_sockdata_utf8_source(args: Vec<Expr>, span: Span) -> Result<Source, Con
 fn lower_key_source(args: Vec<Expr>, span: Span) -> Result<Source, ConfigError> {
     let mut args = args.into_iter();
     let Some(key_expr) = args.next() else {
-        return Err(ConfigError::BadEntityArgs { kind: "key", span });
+        return Err(ConfigError { kind: ErrorKind::BadEntityArgs { kind: "key" }, span });
     };
     let key = lower_key_pattern_arg(key_expr, "key", span)?;
     let mods = lower_mod_pattern(args.collect(), span)?;
@@ -441,24 +408,24 @@ fn lower_key_source(args: Vec<Expr>, span: Span) -> Result<Source, ConfigError> 
 fn lower_send_key(args: Vec<Expr>, span: Span) -> Result<Target, ConfigError> {
     let mut args = args.into_iter();
     let Some(key_expr) = args.next() else {
-        return Err(ConfigError::BadEntityArgs { kind: "send_key", span });
+        return Err(ConfigError { kind: ErrorKind::BadEntityArgs { kind: "send_key" }, span });
     };
     let mods = lower_mods(args, span)?;
     match key_expr {
         Expr::Ident { name, .. } => Ok(Target::Token(Token::press_key(lower_key_name(&name, span)?, mods))),
         Expr::Literal { value: Literal::Char(ch), .. } => Ok(Target::Token(Token::press_utf8(ch, mods))),
-        Expr::Pair { span, .. } => Err(ConfigError::PairUnsupported { span }),
-        _ => Err(ConfigError::BadEntityArgs { kind: "send_key", span }),
+        Expr::Pair { span, .. } => Err(ConfigError { kind: ErrorKind::PairUnsupported, span }),
+        _ => Err(ConfigError { kind: ErrorKind::BadEntityArgs { kind: "send_key" }, span }),
     }
 }
 
 fn lower_inherit_key(args: Vec<Expr>, span: Span) -> Result<Target, ConfigError> {
     let mut args = args.into_iter();
     let Some(expr) = args.next() else {
-        return Err(ConfigError::BadEntityArgs { kind: "inherit_key", span });
+        return Err(ConfigError { kind: ErrorKind::BadEntityArgs { kind: "inherit_key" }, span });
     };
     if args.next().is_some() {
-        return Err(ConfigError::BadEntityArgs { kind: "inherit_key", span });
+        return Err(ConfigError { kind: ErrorKind::BadEntityArgs { kind: "inherit_key" }, span });
     }
     Ok(Target::InheritToken(InheritToken::Key {
         key: lower_key_pattern_arg(expr, "inherit_key", span)?,
@@ -469,20 +436,20 @@ fn lower_key_pattern_arg(expr: Expr, kind: &'static str, span: Span) -> Result<K
     match expr {
         Expr::Ident { name, .. } => Ok(KeyPattern::Named(lower_key_name(&name, span)?)),
         Expr::Pair { .. } => Ok(KeyPattern::CharPair(lower_char_pair_expr(expr)?)),
-        _ => Err(ConfigError::BadEntityArgs { kind, span }),
+        _ => Err(ConfigError { kind: ErrorKind::BadEntityArgs { kind }, span }),
     }
 }
 
 fn lower_char_pair_expr(expr: Expr) -> Result<CharPair, ConfigError> {
     let span = expr.span();
     let Expr::Pair { unshifted, shifted, .. } = expr else {
-        return Err(ConfigError::CharPairKeyNeedsChars { span });
+        return Err(ConfigError { kind: ErrorKind::CharPairKeyNeedsChars, span });
     };
     let Some(unshifted) = literal_char(*unshifted) else {
-        return Err(ConfigError::CharPairKeyNeedsChars { span });
+        return Err(ConfigError { kind: ErrorKind::CharPairKeyNeedsChars, span });
     };
     let Some(shifted) = literal_char(*shifted) else {
-        return Err(ConfigError::CharPairKeyNeedsChars { span });
+        return Err(ConfigError { kind: ErrorKind::CharPairKeyNeedsChars, span });
     };
     Ok(CharPair { unshifted, shifted })
 }
@@ -519,11 +486,11 @@ fn lower_mods(args: impl IntoIterator<Item = Expr>, span: Span) -> Result<Mods, 
 
     for arg in args {
         let Expr::Ident { name, .. } = arg else {
-            return Err(ConfigError::BadModifier { span });
+            return Err(ConfigError { kind: ErrorKind::BadModifier, span });
         };
         let bit = lower_mod_name(&name, span)?;
         if (mods & bit) != Mods::EMPTY {
-            return Err(ConfigError::DuplicateModifier { name, span });
+            return Err(ConfigError { kind: ErrorKind::DuplicateModifier { name }, span });
         }
         mods |= bit;
     }
@@ -545,22 +512,21 @@ fn lower_signal_name(name: &str, span: Span) -> Result<Signal, ConfigError> {
         "SIGTTIN" => Ok(Signal(libc::SIGTTIN)),
         "SIGTTOU" => Ok(Signal(libc::SIGTTOU)),
         "SIGWINCH" => Ok(Signal(libc::SIGWINCH)),
-        "SIGKILL" | "SIGSTOP" => Err(ConfigError::UnsupportedSignal {
-            name: name.to_owned(),
-            reason: "uncatchable",
+        "SIGKILL" | "SIGSTOP" => Err(ConfigError {
+            kind: ErrorKind::UnsupportedSignal {
+                name: name.to_owned(),
+                reason: "uncatchable",
+            },
             span,
         }),
-        "SIGILL" | "SIGABRT" | "SIGFPE" | "SIGSEGV" | "SIGBUS" | "SIGTRAP" | "SIGSYS" => {
-            Err(ConfigError::UnsupportedSignal {
+        "SIGILL" | "SIGABRT" | "SIGFPE" | "SIGSEGV" | "SIGBUS" | "SIGTRAP" | "SIGSYS" => Err(ConfigError {
+            kind: ErrorKind::UnsupportedSignal {
                 name: name.to_owned(),
                 reason: "unsupported; error signals are not supported as events",
-                span,
-            })
-        }
-        _ => Err(ConfigError::UnknownSignal {
-            name: name.to_owned(),
+            },
             span,
         }),
+        _ => Err(ConfigError { kind: ErrorKind::UnknownSignal { name: name.to_owned() }, span }),
     }
 }
 
@@ -648,7 +614,7 @@ fn lower_key_name(name: &str, span: Span) -> Result<Key, ConfigError> {
             } else if let Some(n) = parse_numbered_name(name, "kp_") && n <= 9 {
                 Ok(Key::Keypad(KeypadKey::Digit(n)))
             } else {
-                Err(ConfigError::UnknownKey { name: name.to_owned(), span })
+                Err(ConfigError { kind: ErrorKind::UnknownKey { name: name.to_owned() }, span })
             }
         }
     }
@@ -662,7 +628,7 @@ fn lower_mod_name(name: &str, span: Span) -> Result<Mods, ConfigError> {
         "super" => Ok(Mods::SUPER),
         "hyper" => Ok(Mods::HYPER),
         "meta" => Ok(Mods::META),
-        _ => Err(ConfigError::UnknownModifier { name: name.to_owned(), span }),
+        _ => Err(ConfigError { kind: ErrorKind::UnknownModifier { name: name.to_owned() }, span }),
     }
 }
 
@@ -682,25 +648,25 @@ fn lower_exec_command(args: Vec<Expr>, span: Span) -> Result<CommandSpec, Config
 
     for arg in args {
         let Expr::Literal { value: Literal::String(s), .. } = arg else {
-            return Err(ConfigError::BadCommandArgs { kind: "exec", span });
+            return Err(ConfigError { kind: ErrorKind::BadCommandArgs { kind: "exec" }, span });
         };
         argv.push(s);
     }
 
     if argv.is_empty() || argv[0].is_empty() {
-        Err(ConfigError::EmptyCommand { span })
+        Err(ConfigError { kind: ErrorKind::EmptyCommand, span })
     } else {
         Ok(CommandSpec::Exec { argv })
     }
 }
 
 fn lower_shell_command(args: Vec<Expr>, span: Span) -> Result<CommandSpec, ConfigError> {
-    let command = expect_one_string(args).map_err(|_| ConfigError::BadCommandArgs {
-        kind: "sh", span,
+    let command = expect_one_string(args).map_err(|_| ConfigError {
+        kind: ErrorKind::BadCommandArgs { kind: "sh" }, span,
     })?;
 
     if command.is_empty() {
-        Err(ConfigError::EmptyCommand { span })
+        Err(ConfigError { kind: ErrorKind::EmptyCommand, span })
     } else {
         Ok(CommandSpec::Shell { command })
     }
@@ -864,8 +830,8 @@ mod tests {
         b.finish()
     }
 
-    fn err(stmts: Vec<Stmt>) -> ConfigError {
-        finish(stmts).unwrap_err()
+    fn err(stmts: Vec<Stmt>) -> ErrorKind {
+        finish(stmts).unwrap_err().kind
     }
 
     fn group_id(config: &Config, name: &str) -> GroupId {
@@ -875,7 +841,7 @@ mod tests {
     #[test]
     fn unknown_directive_is_rejected() {
         let e = err(vec![directive("bogus", vec![])]);
-        assert!(matches!(e, ConfigError::UnknownDirective { name, .. } if name == "bogus"));
+        assert!(matches!(e, ErrorKind::UnknownDirective { name } if name == "bogus"));
     }
 
     #[test]
@@ -891,7 +857,7 @@ mod tests {
             define("group", vec![string("reload")]),
             define("group", vec![string("reload")]),
         ]);
-        assert!(matches!(e, ConfigError::DuplicateGroup { name, .. } if name == "reload"));
+        assert!(matches!(e, ErrorKind::DuplicateGroup { name } if name == "reload"));
     }
 
     #[test]
@@ -902,14 +868,14 @@ mod tests {
             vec![string("a"), string("b")],
         ] {
             let e = err(vec![define("group", args)]);
-            assert!(matches!(e, ConfigError::BadDefinitionArgs { kind: "group", .. }));
+            assert!(matches!(e, ErrorKind::BadDefinitionArgs { kind: "group" }));
         }
     }
 
     #[test]
     fn rejects_unknown_definition_kind() {
         let e = err(vec![define("abab", vec![string("x")])]);
-        assert!(matches!(e, ConfigError::UnknownDefinition { kind, .. } if kind == "abab"));
+        assert!(matches!(e, ErrorKind::UnknownDefinition { kind } if kind == "abab"));
     }
 
     #[test]
@@ -961,7 +927,7 @@ mod tests {
         ] {
             let e = err(vec![directive("service", args)]);
             eprintln!("{e}");
-            assert!(matches!(e, ConfigError::BadDirectiveArgs { kind: "service", .. }));
+            assert!(matches!(e, ErrorKind::BadDirectiveArgs { kind: "service" }));
         }
     }
 
@@ -971,7 +937,7 @@ mod tests {
             directive("service", vec![string("helper"), call("exec", vec![string("a")])]),
             directive("service", vec![string("helper"), call("exec", vec![string("b")])]),
         ]);
-        assert!(matches!(e, ConfigError::DuplicateDirective { kind: "service", .. }));
+        assert!(matches!(e, ErrorKind::DuplicateDirective { kind: "service", .. }));
     }
 
     #[test]
@@ -981,13 +947,13 @@ mod tests {
             call("exec", vec![string("")]),
         ] {
             let e = err(vec![directive("service", vec![string("helper"), command])]);
-            assert!(matches!(e, ConfigError::EmptyCommand { .. }));
+            assert!(matches!(e, ErrorKind::EmptyCommand { .. }));
         }
 
         let e = err(vec![directive("service",
             vec![string("helper"), call("exec", vec![ident("prog")])],
         )]);
-        assert!(matches!(e, ConfigError::BadCommandArgs { kind: "exec", .. }));
+        assert!(matches!(e, ErrorKind::BadCommandArgs { kind: "exec" }));
     }
 
     #[test]
@@ -998,13 +964,13 @@ mod tests {
             call("sh", vec![ident("echo")]),
         ] {
             let e = err(vec![directive("service", vec![string("helper"), command])]);
-            assert!(matches!(e, ConfigError::BadCommandArgs { kind: "sh", .. }));
+            assert!(matches!(e, ErrorKind::BadCommandArgs { kind: "sh" }));
         }
 
         let e = err(vec![directive("service",
             vec![string("helper"), call("sh", vec![string("")])],
         )]);
-        assert!(matches!(e, ConfigError::EmptyCommand { .. }));
+        assert!(matches!(e, ErrorKind::EmptyCommand { .. }));
     }
 
     #[test]
@@ -1012,7 +978,7 @@ mod tests {
         let e = err(vec![directive("service",
             vec![string("name"), call("foo", vec![string("x")])],
         )]);
-        assert!(matches!(e, ConfigError::UnknownCommandKind { kind, .. } if kind == "foo"));
+        assert!(matches!(e, ErrorKind::UnknownCommandKind { kind } if kind == "foo"));
     }
 
     #[test]
@@ -1135,7 +1101,7 @@ mod tests {
             call("key", vec![ident("f1")]),
             call("send_key", vec![pair('x', 'X')]),
         )]);
-        assert!(matches!(e, ConfigError::PairUnsupported { .. }));
+        assert!(matches!(e, ErrorKind::PairUnsupported { .. }));
     }
 
     #[test]
@@ -1173,7 +1139,7 @@ mod tests {
             call("key", vec![ident("f1")]),
             call("inherit_key", vec![ch('🙂')]),
         )]);
-        assert!(matches!(e, ConfigError::BadEntityArgs { kind: "inherit_key", .. }));
+        assert!(matches!(e, ErrorKind::BadEntityArgs { kind: "inherit_key" }));
     }
 
     #[test]
@@ -1182,7 +1148,7 @@ mod tests {
             call("key", vec![bad_pair()]),
             call("send_key", vec![ch('x')]),
         )]);
-        assert!(matches!(e, ConfigError::CharPairKeyNeedsChars { .. }));
+        assert!(matches!(e, ErrorKind::CharPairKeyNeedsChars { .. }));
     }
 
     #[test]
@@ -1234,7 +1200,7 @@ mod tests {
             call("key", vec![ident("f1")]),
             call("group", vec![string("xyz")]),
         )]);
-        assert!(matches!(e, ConfigError::UnknownGroup { name, .. } if name == "xyz"));
+        assert!(matches!(e, ErrorKind::UnknownGroup { name } if name == "xyz"));
     }
 
     #[test]
@@ -1243,7 +1209,7 @@ mod tests {
             define("group", vec![string("g")]),
             map(call("group", vec![string("g")]), call("group", vec![string("g")])),
         ]);
-        assert!(matches!(e, ConfigError::GroupSelfMap { .. }));
+        assert!(matches!(e, ErrorKind::GroupSelfMap { .. }));
     }
 
     #[test]
@@ -1252,7 +1218,7 @@ mod tests {
             call("send_key", vec![ch('x')]),
             call("send_key", vec![ch('y')]),
         )]);
-        assert!(matches!(e, ConfigError::SendTokenAsSource { .. }));
+        assert!(matches!(e, ErrorKind::SendTokenAsSource { .. }));
     }
 
     #[test]
@@ -1261,7 +1227,7 @@ mod tests {
             call("key", vec![ident("f1")]),
             call("key", vec![ident("f2")]),
         )]);
-        assert!(matches!(e, ConfigError::SourceTokenAsTarget { .. }));
+        assert!(matches!(e, ErrorKind::SourceTokenAsTarget { .. }));
     }
 
     #[test]
@@ -1270,7 +1236,7 @@ mod tests {
             call("sh", vec![string("echo hi")]),
             call("send_key", vec![ch('x')]),
         )]);
-        assert!(matches!(e, ConfigError::ActionAsSource { .. }));
+        assert!(matches!(e, ErrorKind::ActionAsSource { .. }));
     }
 
     #[test]
@@ -1279,7 +1245,7 @@ mod tests {
             call("key", vec![ident("f1")]),
             call("sockdata_utf8", vec![string("reload")]),
         )]);
-        assert!(matches!(e, ConfigError::EventAsTarget { .. }));
+        assert!(matches!(e, ErrorKind::EventAsTarget { .. }));
     }
 
     #[test]
@@ -1288,7 +1254,7 @@ mod tests {
             call("inherit_key", vec![pair('x', 'X')]),
             call("send_key", vec![ch('y')]),
         )]);
-        assert!(matches!(e, ConfigError::InheritTokenAsSource { .. }));
+        assert!(matches!(e, ErrorKind::InheritTokenAsSource { .. }));
     }
 
     #[test]
@@ -1297,7 +1263,7 @@ mod tests {
             define("group", vec![string("g")]),
             map(call("group", vec![string("g")]), call("inherit_key", vec![pair('x', 'X')])),
         ]);
-        assert!(matches!(e, ConfigError::TargetRequiresPayload { required: PayloadKind::Token, .. }));
+        assert!(matches!(e, ErrorKind::TargetRequiresPayload { required: PayloadKind::Token }));
     }
 
     #[test]
@@ -1307,7 +1273,7 @@ mod tests {
             map(call("key", vec![pair('d', 'D')]), call("group", vec![string("g")])),
             map(call("group", vec![string("g")]), call("inherit_key", vec![pair('w', 'W')])),
         ]);
-        assert!(matches!(e, ConfigError::TargetRequiresPayload { required: PayloadKind::Token, .. }));
+        assert!(matches!(e, ErrorKind::TargetRequiresPayload { required: PayloadKind::Token }));
     }
 
     #[test]
@@ -1334,19 +1300,19 @@ mod tests {
             call("signal", vec![string("SIGXYZ")]),
             call("sh", vec![string("x")]),
         )]);
-        assert!(matches!(e, ConfigError::UnknownSignal { name, .. } if name == "SIGXYZ"));
+        assert!(matches!(e, ErrorKind::UnknownSignal { name } if name == "SIGXYZ"));
 
         let e = err(vec![map(
             call("signal", vec![string("SIGKILL")]),
             call("sh", vec![string("x")]),
         )]);
-        assert!(matches!(e, ConfigError::UnsupportedSignal { name, reason: "uncatchable", ..} if name == "SIGKILL"));
+        assert!(matches!(e, ErrorKind::UnsupportedSignal { name, reason: "uncatchable"} if name == "SIGKILL"));
 
         let e = err(vec![map(
             call("signal", vec![string("SIGSEGV")]),
             call("sh", vec![string("x")]),
         )]);
-        assert!(matches!(e, ConfigError::UnsupportedSignal { name, .. } if name == "SIGSEGV"));
+        assert!(matches!(e, ErrorKind::UnsupportedSignal { name, .. } if name == "SIGSEGV"));
     }
 
     #[test]
@@ -1402,7 +1368,7 @@ mod tests {
                 call("key", vec![ident(name)]),
                 call("send_key", vec![ch('x')]),
             )]);
-            assert!(matches!(e, ConfigError::UnknownKey { name: got, .. } if got == name));
+            assert!(matches!(e, ErrorKind::UnknownKey { name: got } if got == name));
         }
     }
 
@@ -1424,7 +1390,7 @@ mod tests {
             call("key", vec![ident("f1"), ident("ctrl"), ident("ctrl")]),
             call("send_key", vec![ch('x')]),
         )]);
-        assert!(matches!(e, ConfigError::DuplicateModifier { name, .. } if name == "ctrl"));
+        assert!(matches!(e, ErrorKind::DuplicateModifier { name } if name == "ctrl"));
     }
 
     #[test]
@@ -1433,13 +1399,13 @@ mod tests {
             call("key", vec![ident("f1"), ident("bogus")]),
             call("send_key", vec![ch('x')]),
         )]);
-        assert!(matches!(e, ConfigError::UnknownModifier { name, .. } if name == "bogus"));
+        assert!(matches!(e, ErrorKind::UnknownModifier { name } if name == "bogus"));
 
         let e = err(vec![map(
             call("key", vec![ident("f1"), string("ctrl")]),
             call("send_key", vec![ch('x')]),
         )]);
-        assert!(matches!(e, ConfigError::BadModifier { .. }));
+        assert!(matches!(e, ErrorKind::BadModifier { .. }));
     }
 
     #[test]
@@ -1474,7 +1440,7 @@ mod tests {
             call("key", vec![ident("f1")]),
             call("bogus", vec![]),
         )]);
-        assert!(matches!(e,ConfigError::UnknownEntity { name, .. } if name == "bogus"));
+        assert!(matches!(e,ErrorKind::UnknownEntity { name } if name == "bogus"));
     }
 
     #[test]
@@ -1484,7 +1450,7 @@ mod tests {
             call("key", vec![ident("f1")]),
             call("send_key", vec![ch('x')]),
         )]);
-        assert!(matches!(e, ConfigError::UnsupportedMappingAttr { name, .. } if name == "xyz"));
+        assert!(matches!(e, ErrorKind::UnsupportedMappingAttr { name } if name == "xyz"));
     }
 
     #[test]
@@ -1508,14 +1474,14 @@ mod tests {
                 call("send_key", vec![ch('x')]),
             ),
         ]);
-        assert!(matches!(e, ConfigError::InvalidPassthroughSource { .. }));
+        assert!(matches!(e, ErrorKind::InvalidPassthroughSource { .. }));
 
         let e = err(vec![map_with_attrs(
             vec![attr("passthrough", vec![])],
             call("sockdata_utf8", vec![string("reload")]),
             call("sh", vec![string("reload")]),
         )]);
-        assert!(matches!(e, ConfigError::InvalidPassthroughSource { .. }));
+        assert!(matches!(e, ErrorKind::InvalidPassthroughSource { .. }));
     }
 
     #[test]
@@ -1525,13 +1491,13 @@ mod tests {
             call("key", vec![ident("f1")]),
             call("send_key", vec![ch('x')]),
         )]);
-        assert!(matches!(e, ConfigError::BadMappingAttrArgs { kind: "passthrough", .. }));
+        assert!(matches!(e, ErrorKind::BadMappingAttrArgs { kind: "passthrough" }));
 
         let e = err(vec![map_with_attrs(
             vec![attr("passthrough", vec![]), attr("passthrough", vec![])],
             call("key", vec![ident("f1")]),
             call("send_key", vec![ch('x')]),
         )]);
-        assert!(matches!(e, ConfigError::DuplicateMappingAttr { kind: "passthrough", .. }));
+        assert!(matches!(e, ErrorKind::DuplicateMappingAttr { kind: "passthrough" }));
     }
 }

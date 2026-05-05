@@ -121,8 +121,10 @@ impl Stmt {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ErrorKind {
-    #[error("expected {0}")]
-    Expected(&'static str),
+    #[error("expected {what}")]
+    Expected {
+        what: &'static str,
+    },
 
     #[error("unknown statement")]
     UnknownStatement,
@@ -139,8 +141,10 @@ pub enum ErrorKind {
     #[error("character literal contains more than one character")]
     CharTooLong,
 
-    #[error("invalid escape sequence \\{}", .0.escape_default())]
-    InvalidEscape(char),
+    #[error("invalid escape sequence \\{}", .ch.escape_default())]
+    InvalidEscape {
+        ch: char,
+    },
 
     #[error("invalid hex escape")]
     InvalidHexEscape,
@@ -165,7 +169,7 @@ pub enum ErrorKind {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("{kind} at byte {}..{}", .span.start, .span.end)]
+#[error("byte {}..{}: {kind}", .span.start, .span.end)]
 pub struct ParseError {
     pub kind: ErrorKind,
     pub span: Span,
@@ -280,7 +284,7 @@ impl<'a> Cursor<'a> {
                 self.pos += 1;
                 Ok(())
             }
-            _ => Err(self.err_here(ErrorKind::Expected(what))),
+            _ => Err(self.err_here(ErrorKind::Expected { what })),
         }
     }
 
@@ -297,7 +301,7 @@ impl<'a> Cursor<'a> {
         let start = self.pos;
 
         let Some(b) = self.peek_byte() else {
-            return Err(self.err_here(ErrorKind::Expected("identifier")));
+            return Err(self.err_here(ErrorKind::Expected { what: "identifier" }));
         };
         if !is_ident_start(b) {
             return Err(self.err_here(ErrorKind::InvalidIdentifier));
@@ -422,7 +426,7 @@ impl<'a> Cursor<'a> {
                 })
             }
             _ => Err(ParseError {
-                kind: ErrorKind::InvalidEscape(esc as char),
+                kind: ErrorKind::InvalidEscape { ch: esc as char },
                 span: Span { ctx: self.ctx, start: self.base + escape_pos, end: self.base + escape_pos + 1 },
             }),
         }
@@ -613,7 +617,7 @@ impl<'a> Cursor<'a> {
                     span,
                 })
             }
-            _ => Err(self.err_here(ErrorKind::Expected("expression"))),
+            _ => Err(self.err_here(ErrorKind::Expected { what: "expression" })),
         }
     }
 
@@ -637,7 +641,7 @@ impl<'a> Cursor<'a> {
                     self.cons_byte();
                     break;
                 }
-                _ => return Err(self.err_here(ErrorKind::Expected("',' or ')'"))),
+                _ => return Err(self.err_here(ErrorKind::Expected { what: "',' or ')'" })),
             }
         }
 
@@ -825,7 +829,7 @@ fn parse_directive(s: &str, ctx: LineCtx, base: usize) -> Result<Stmt, ParseErro
     c.expect_byte(b'@', "'@'")?;
     let name = c.parse_ident()?;
     if !c.eof() && !is_ascii_ws(c.peek_byte().unwrap()) {
-        return Err(c.err_here(ErrorKind::Expected("whitespace")));
+        return Err(c.err_here(ErrorKind::Expected { what: "whitespace" }));
     }
 
     let args = parse_ws_exprs(&mut c)?;
@@ -841,13 +845,13 @@ fn parse_definition(s: &str, ctx: LineCtx, base: usize) -> Result<Stmt, ParseErr
     let kw = c.parse_ident()?;
     debug_assert_eq!(kw, "define");
     if c.eof() || !is_ascii_ws(c.peek_byte().unwrap()) {
-        return Err(c.err_here(ErrorKind::Expected("whitespace")));
+        return Err(c.err_here(ErrorKind::Expected { what: "whitespace" }));
     }
 
     c.skip_ws();
     let kind = c.parse_ident()?;
     if !c.eof() && !is_ascii_ws(c.peek_byte().unwrap()) {
-        return Err(c.err_here(ErrorKind::Expected("whitespace")));
+        return Err(c.err_here(ErrorKind::Expected { what: "whitespace" }));
     }
 
     let args = parse_ws_exprs(&mut c)?;
@@ -868,7 +872,7 @@ fn parse_ws_exprs(c: &mut Cursor<'_>) -> Result<Vec<Expr>, ParseError> {
 
         args.push(c.parse_expr()?);
         if !c.eof() && !is_ascii_ws(c.peek_byte().unwrap()) {
-            return Err(c.err_here(ErrorKind::Expected("whitespace")));
+            return Err(c.err_here(ErrorKind::Expected { what: "whitespace" }));
         }
     }
     Ok(args)
@@ -883,7 +887,7 @@ fn parse_mapping_lhs_full(
 
     if s.is_empty() {
         return Err(ParseError {
-            kind: ErrorKind::Expected("expression"),
+            kind: ErrorKind::Expected { what: "expression" },
             span: Span::at(ctx, base + off),
         });
     }
@@ -943,7 +947,7 @@ fn parse_expr_full(s: &str, ctx: LineCtx, base: usize) -> Result<Expr, ParseErro
 
     if s.is_empty() {
         return Err(ParseError {
-            kind: ErrorKind::Expected("expression"),
+            kind: ErrorKind::Expected { what: "expression" },
             span: Span::at(ctx, base + off),
         });
     }
@@ -962,7 +966,7 @@ fn parse_expr_full(s: &str, ctx: LineCtx, base: usize) -> Result<Expr, ParseErro
 fn parse_literal_full(s: &str, ctx: LineCtx, base: usize) -> Result<Literal, ParseError> {
     if s.is_empty() {
         return Err(ParseError {
-            kind: ErrorKind::Expected("literal"),
+            kind: ErrorKind::Expected { what: "literal" },
             span: Span::at(ctx, base),
         });
     }
@@ -999,7 +1003,7 @@ fn parse_literal_full(s: &str, ctx: LineCtx, base: usize) -> Result<Literal, Par
 fn parse_ident_full(s: &str, ctx: LineCtx, base: usize) -> Result<String, ParseError> {
     if s.is_empty() {
         return Err(ParseError {
-            kind: ErrorKind::Expected("identifier"),
+            kind: ErrorKind::Expected { what: "identifier" },
             span: Span::at(ctx, base),
         });
     }
