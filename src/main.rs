@@ -35,6 +35,29 @@ use crate::unix::signal::{SignalError, SignalRegistry};
 use crate::unix::sock::{ControlSock, default_sock_path};
 use crate::unix::tty::{RawTerminal, get_winsize, set_winsize};
 
+const SENSITIVE_CHILD_BASENAMES: &[&str] = &[
+    // privilege/auth
+    "sudo", "su", "doas", "pkexec", "login", "newgrp", "sg",
+
+    // user/password
+    "passwd", "chpasswd", "chsh", "chfn", "vipw", "vigr", "kpasswd", "htpasswd",
+
+    // crypto/sign
+    "gpg", "gpg2", "gpg-agent", "pinentry", "pinentry-curses", "pinentry-tty",
+    "pinentry-gnome3", "pinentry-gtk-2", "pinentry-qt", "pinentry-mac",
+    "ssh-keygen", "openssl", "age", "rage", "sq", "sequoia-sq",
+
+    // password/secret manager
+    "pass", "op", "bw", "rbw", "keepassxc-cli", "secret-tool", "security",
+    "ykman", "ykchalresp",
+
+    // remote sessions
+    "ssh", "sftp", "scp", "mosh", "telnet", "rlogin", "rsh", "ftp", "lftp",
+
+    // unlock/admin shells
+    "cryptsetup", "zfs",
+];
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error(transparent)]
@@ -51,6 +74,12 @@ pub enum AppError {
 
     #[error(transparent)]
     ConfigLoad(#[from] crate::config::loader::ConfigLoadError),
+
+    #[error("\
+refusing to run for sensitive child '{0}'
+this program internally tracks/routes terminal input, which you probably don't want here
+run with --allow-sensitive-child to run anyways")]
+    SensitiveChild(String),
 
     #[error(transparent)]
     ControlSock(#[from] crate::unix::sock::ControlSockError),
@@ -106,13 +135,14 @@ usage: {argv0} [options] command [args ...]
 remap/inject/filter for terminal input based on config rules
 
 options:
-  -c, --config <PATH>       config file to use
-      --sock <PATH>         path of the created socket (computes a unique one by default)
-      --no-implicit-config  don't use an implicit config if found
-      --check-config        parse config and exit
-      --dump-config         parse config, print parse result, and exit
-  -h, --help                display this help and exit
-  -V, --version             output version information and exit
+  -c, --config <PATH>          config file to use
+      --sock <PATH>            path of the created socket (computes a unique one by default)
+      --no-implicit-config     don't use an implicit config if found
+      --allow-sensitive-child  allow running with children in a \"sensitive\" blocklist (e.g sudo, pinentry...)
+      --check-config           parse config and exit
+      --dump-config            parse config, print parse result, and exit
+  -h, --help                   display this help and exit
+  -V, --version                output version information and exit
 ");
         return Ok(0);
     }
@@ -145,6 +175,11 @@ try '--help' for more info
     if cli.dump_config {
         println!("{config:#?}");
         return Ok(0);
+    }
+
+    if !cli.allow_sensitive_child &&
+        let Some(child_name) = cli.command[0].to_str() && SENSITIVE_CHILD_BASENAMES.contains(&child_name) {
+        return Err(AppError::SensitiveChild(child_name.to_owned()));
     }
 
     let sock_path = default_sock_path("yxt")?;
