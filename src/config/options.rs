@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-use super::line::{Literal, Span};
+use super::ast::{Literal, Span};
 use super::lower::{ConfigError, ErrorKind, LiteralKind};
 
 #[derive(Debug, Clone)]

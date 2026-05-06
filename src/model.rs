@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::config::{line::Span, options::Options};
+use crate::config::{ast::Span, options::Options};
 
 // ================================================================================================
 // keys/mods
@@ -183,7 +183,7 @@ pub enum DefineGroupError {
     Duplicate(String),
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GroupTable {
     id_to_name: Vec<String>,
     name_to_id: HashMap<String, GroupId>,

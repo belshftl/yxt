@@ -5,8 +5,9 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use crate::model::Config;
-use super::line::{Expr, FileId, LineCtx, Literal, ParseError, Span, Stmt, parse_line};
+use super::ast::{Expr, FileId, LineCtx, Literal, Span, Stmt};
 use super::lower::{ConfigBuilder, ConfigError};
+use super::parse::{ParseError, parse_line};
 
 #[derive(Debug, Default)]
 pub struct SourceFile {
@@ -129,10 +130,10 @@ impl ConfigLoader {
 
     pub fn report_err(&self, err: ConfigLoadError) {
         match err {
-            ConfigLoadError::UnsupportedVersion { version: _, span }
+            ConfigLoadError::UnsupportedVersion { span, .. }
                 | ConfigLoadError::VersionMustBeFirst { span }
                 | ConfigLoadError::DuplicateVersion { span }
-                | ConfigLoadError::VersionMismatch { expected: _, got: _, span }
+                | ConfigLoadError::VersionMismatch { span, .. }
                 | ConfigLoadError::BadVersionArgs { span }
                 | ConfigLoadError::BadIncludeArgs { span } => self.report_err_span(&err, span),
             ConfigLoadError::Syntax(ParseError { kind, span }) => self.report_err_span(&kind, span),
@@ -157,6 +158,7 @@ impl ConfigLoader {
     }
 
     fn report_err_span(&self, err: &impl std::fmt::Display, span: Span) {
+        const TAB_WIDTH: usize = 8;
         let term = std::io::stderr().is_terminal();
         let reset = if term { "\x1b[0m" } else { "" };
         let bold = if term { "\x1b[1m" } else { "" };
@@ -168,15 +170,22 @@ impl ConfigLoader {
         }
 
         let line = self.sources.line(span.ctx).unwrap();
+        if span.end < span.start || span.start > line.len() {
+            panic!("invalid diagnostic span: {span:?} for line length {}", line.len());
+        }
+        let display_line = tab_expand(line, TAB_WIDTH);
+        let start_col = display_col_of(line, span.start, TAB_WIDTH);
+        let end_col = display_col_of(line, span.end, TAB_WIDTH);
+        let width = end_col.strict_sub(start_col).max(1);
         let line_no = format!("{:4}", span.ctx.line + 1);
         eprintln!(
             "{bold}{}:{}:{}{reset}: {err_color}error: {reset}{err}",
-            filepath.display(), span.ctx.line + 1, span.start + 1
+            filepath.display(), span.ctx.line + 1, span.start + 1,
         );
-        eprintln!(" {line_no} | {line}");
+        eprintln!(" {line_no} | {display_line}");
         eprintln!(
             " {} | {}{err_color}{}{reset}",
-            " ".repeat(line_no.len()), " ".repeat(span.start), "^".repeat(span.end.strict_sub(span.start).max(1))
+            " ".repeat(line_no.len()), " ".repeat(start_col), "^".repeat(width),
         );
     }
 
@@ -284,6 +293,43 @@ impl ConfigLoader {
         };
         self.parse_one_file(&path, false)
     }
+}
+
+fn tab_advance(col: usize, tabw: usize) -> usize {
+    let rem = col % tabw;
+    if rem == 0 { tabw } else { tabw - rem }
+}
+
+fn display_col_of(line: &str, byte: usize, tabw: usize) -> usize {
+    let byte = byte.min(line.len());
+    let mut col = 0;
+    for (idx, ch) in line.char_indices() {
+        if idx >= byte {
+            break;
+        }
+        if ch == '\t' {
+            col += tab_advance(col, tabw);
+        } else {
+            col += 1;
+        }
+    }
+    col
+}
+
+fn tab_expand(line: &str, tabw: usize) -> String {
+    let mut out = String::new();
+    let mut col = 0;
+    for ch in line.chars() {
+        if ch == '\t' {
+            let n = tab_advance(col, tabw);
+            out.extend(std::iter::repeat(' ').take(n));
+            col += n;
+        } else {
+            out.push(ch);
+            col += 1;
+        }
+    }
+    out
 }
 
 fn expect_version_arg(args: Vec<Expr>, span: Span) -> Result<u32, ConfigLoadError> {
@@ -758,7 +804,7 @@ key(nope) => send_key('x')
         match err {
             ConfigLoadError::Semantic(ConfigError { kind: ErrorKind::UnknownKey { name }, span }) => {
                 assert_eq!(name, "nope");
-                assert_eq!(span.ctx.line, 4);
+                assert_eq!(span.ctx.line, 3);
             }
             other => panic!("expected unknown key, got {other:?}"),
         }

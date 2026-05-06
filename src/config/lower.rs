@@ -3,8 +3,14 @@
 use std::collections::HashSet;
 
 use crate::model::*;
-use super::line::{Expr, Literal, MappingAttr, MappingOp, Span, Stmt};
+use super::ast::{Expr, Literal, MappingAttr, MappingOp, PairSide, Span, Stmt};
 use super::options::Options;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LoweredCharPair {
+    pair: CharPair,
+    default_mods: Mods,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiteralKind {
@@ -120,6 +126,11 @@ pub enum ErrorKind {
 
     #[error("char-pair key must contain two character literals")]
     CharPairKeyNeedsChars,
+
+    #[error("can't infer char pair for key from character '{ch}'")]
+    CantInferTextPair {
+        ch: char,
+    },
 
     #[error("unknown signal '{name}'")]
     UnknownSignal {
@@ -404,8 +415,8 @@ fn lower_key_source(args: Vec<Expr>, span: Span) -> Result<Source, ConfigError> 
     let Some(key_expr) = args.next() else {
         return Err(ConfigError { kind: ErrorKind::BadEntityArgs { kind: "key" }, span });
     };
-    let key = lower_key_pattern_arg(key_expr, "key", span)?;
-    let mods = lower_mod_pattern(args.collect(), span)?;
+    let (key, dfl) = lower_key_pattern_arg(key_expr, "key", span)?;
+    let mods = lower_mod_pattern(args.collect(), span, dfl)?;
     Ok(Source::Token(TokenPattern::Key { key, mods }))
 }
 
@@ -418,7 +429,8 @@ fn lower_send_key(args: Vec<Expr>, span: Span) -> Result<Target, ConfigError> {
     match key_expr {
         Expr::Ident { name, .. } => Ok(Target::Token(Token::press_key(lower_key_name(&name, span)?, mods))),
         Expr::Literal { value: Literal::Char(ch), .. } => Ok(Target::Token(Token::press_utf8(ch, mods))),
-        Expr::Pair { span, .. } => Err(ConfigError { kind: ErrorKind::PairUnsupported, span }),
+        Expr::Pair { span, .. } | Expr::InferPair { span, .. } =>
+            Err(ConfigError { kind: ErrorKind::PairUnsupported, span }),
         _ => Err(ConfigError { kind: ErrorKind::BadEntityArgs { kind: "send_key" }, span }),
     }
 }
@@ -431,31 +443,48 @@ fn lower_inherit_key(args: Vec<Expr>, span: Span) -> Result<Target, ConfigError>
     if args.next().is_some() {
         return Err(ConfigError { kind: ErrorKind::BadEntityArgs { kind: "inherit_key" }, span });
     }
-    Ok(Target::InheritToken(InheritToken::Key {
-        key: lower_key_pattern_arg(expr, "inherit_key", span)?,
-    }))
+    let (key, _) = lower_key_pattern_arg(expr, "inherit_key", span)?;
+    Ok(Target::InheritToken(InheritToken::Key { key }))
 }
 
-fn lower_key_pattern_arg(expr: Expr, kind: &'static str, span: Span) -> Result<KeyPattern, ConfigError> {
+fn lower_key_pattern_arg(expr: Expr, kind: &'static str, span: Span) -> Result<(KeyPattern, Mods), ConfigError> {
     match expr {
-        Expr::Ident { name, .. } => Ok(KeyPattern::Named(lower_key_name(&name, span)?)),
-        Expr::Pair { .. } => Ok(KeyPattern::CharPair(lower_char_pair_expr(expr)?)),
+        Expr::Ident { name, .. } => Ok((KeyPattern::Named(lower_key_name(&name, span)?), Mods::EMPTY)),
+        Expr::Pair { .. } | Expr::InferPair { .. } => {
+            let l = lower_char_pair_expr(expr)?;
+            Ok((KeyPattern::CharPair(l.pair), l.default_mods))
+        }
         _ => Err(ConfigError { kind: ErrorKind::BadEntityArgs { kind }, span }),
     }
 }
 
-fn lower_char_pair_expr(expr: Expr) -> Result<CharPair, ConfigError> {
-    let span = expr.span();
-    let Expr::Pair { unshifted, shifted, .. } = expr else {
-        return Err(ConfigError { kind: ErrorKind::CharPairKeyNeedsChars, span });
-    };
-    let Some(unshifted) = literal_char(*unshifted) else {
-        return Err(ConfigError { kind: ErrorKind::CharPairKeyNeedsChars, span });
-    };
-    let Some(shifted) = literal_char(*shifted) else {
-        return Err(ConfigError { kind: ErrorKind::CharPairKeyNeedsChars, span });
-    };
-    Ok(CharPair { unshifted, shifted })
+fn lower_char_pair_expr(expr: Expr) -> Result<LoweredCharPair, ConfigError> {
+    match expr {
+        Expr::Pair { unshifted, shifted, span } => {
+            let Some(unshifted) = literal_char(*unshifted) else {
+                return Err(ConfigError { kind: ErrorKind::CharPairKeyNeedsChars, span });
+            };
+            let Some(shifted) = literal_char(*shifted) else {
+                return Err(ConfigError { kind: ErrorKind::CharPairKeyNeedsChars, span });
+            };
+            Ok(LoweredCharPair { pair: CharPair { unshifted, shifted }, default_mods: Mods::EMPTY})
+        }
+        Expr::InferPair { known, side, span } => {
+            let Some(ch) = literal_char(*known) else {
+                return Err(ConfigError { kind: ErrorKind::CharPairKeyNeedsChars, span });
+            };
+            let pair = match side {
+                PairSide::Unshifted => infer_us_pair_from_unshifted(ch),
+                PairSide::Shifted => infer_us_pair_from_shifted(ch),
+            }.ok_or(ConfigError { kind: ErrorKind::CantInferTextPair { ch }, span })?;
+            let default_mods = match side {
+                PairSide::Unshifted => Mods::EMPTY,
+                PairSide::Shifted => Mods::SHIFT,
+            };
+            Ok(LoweredCharPair { pair, default_mods })
+        }
+        _ => Err(ConfigError { kind: ErrorKind::CharPairKeyNeedsChars, span: expr.span() })
+    }
 }
 
 fn literal_char(expr: Expr) -> Option<char> {
@@ -466,16 +495,92 @@ fn literal_char(expr: Expr) -> Option<char> {
     }
 }
 
-fn lower_mod_pattern(args: Vec<Expr>, span: Span) -> Result<ModsPattern, ConfigError> {
+fn infer_us_pair_from_unshifted(ch: char) -> Option<CharPair> {
+    let shifted = match ch {
+        'a'..='z' => ch.to_ascii_uppercase(),
+
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+
+        '`' => '~',
+        '-' => '_',
+        '=' => '+',
+        '[' => '{',
+        ']' => '}',
+        '\\' => '|',
+        ';' => ':',
+        '\'' => '"',
+        ',' => '<',
+        '.' => '>',
+        '/' => '?',
+
+        ' ' => ' ',
+
+        _ => return None,
+    };
+
+    Some(CharPair {
+        unshifted: ch,
+        shifted,
+    })
+}
+
+fn infer_us_pair_from_shifted(ch: char) -> Option<CharPair> {
+    let unshifted = match ch {
+        'A'..='Z' => ch.to_ascii_lowercase(),
+
+        '!' => '1',
+        '@' => '2',
+        '#' => '3',
+        '$' => '4',
+        '%' => '5',
+        '^' => '6',
+        '&' => '7',
+        '*' => '8',
+        '(' => '9',
+        ')' => '0',
+
+        '~' => '`',
+        '_' => '-',
+        '+' => '=',
+        '{' => '[',
+        '}' => ']',
+        '|' => '\\',
+        ':' => ';',
+        '"' => '\'',
+        '<' => ',',
+        '>' => '.',
+        '?' => '/',
+
+        ' ' => ' ',
+
+        _ => return None,
+    };
+
+    Some(CharPair {
+        unshifted,
+        shifted: ch,
+    })
+}
+
+fn lower_mod_pattern(args: Vec<Expr>, span: Span, dfl: Mods) -> Result<ModsPattern, ConfigError> {
     if args.is_empty() {
-        return Ok(ModsPattern::AnyOf(vec![Mods::EMPTY]));
+        return Ok(ModsPattern::AnyOf(vec![dfl]));
     }
 
     if args.len() == 1 {
         if let Expr::Ident { name, .. } = &args[0] {
             match name.as_str() {
                 "any" => return Ok(ModsPattern::Any),
-                "none" => return Ok(ModsPattern::AnyOf(vec![Mods::EMPTY])),
+                "none" => return Ok(ModsPattern::AnyOf(vec![dfl])),
                 _ => {}
             }
         }
@@ -701,7 +806,7 @@ fn expect_one_string(args: Vec<Expr>) -> Result<String, ()> {
 mod tests {
     use super::*;
 
-    use crate::config::line::{FileId, LineCtx};
+    use crate::config::ast::{FileId, LineCtx};
 
     fn no_attrs() -> MappingAttrs {
         MappingAttrs {
@@ -760,6 +865,22 @@ mod tests {
         Expr::Pair {
             unshifted: Box::new(ident("a")),
             shifted: Box::new(ch('A')),
+            span: sp(),
+        }
+    }
+
+    fn infer_unshifted(c: char) -> Expr {
+        Expr::InferPair {
+            known: Box::new(ch(c)),
+            side: PairSide::Unshifted,
+            span: sp(),
+        }
+    }
+
+    fn infer_shifted(c: char) -> Expr {
+        Expr::InferPair {
+            known: Box::new(ch(c)),
+            side: PairSide::Shifted,
             span: sp(),
         }
     }
@@ -1153,6 +1274,126 @@ mod tests {
             call("send_key", vec![ch('x')]),
         )]);
         assert!(matches!(e, ErrorKind::CharPairKeyNeedsChars { .. }));
+    }
+
+    #[test]
+    fn infers_shifted_from_unshifted() {
+        let config = finish(vec![map(
+            call("key", vec![infer_unshifted('a')]),
+            call("send_key", vec![ch('x')]),
+        )]).unwrap();
+        assert_eq!(
+            config.mappings[0].from,
+            Source::Token(TokenPattern::Key {
+                key: KeyPattern::CharPair(CharPair {
+                    unshifted: 'a',
+                    shifted: 'A',
+                }),
+                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
+            }),
+        );
+    }
+
+    #[test]
+    fn infers_unshifted_from_shifted_and_defaults_to_shift() {
+        let config = finish(vec![map(
+            call("key", vec![infer_shifted('A')]),
+            call("send_key", vec![ch('x')]),
+        )]).unwrap();
+        assert_eq!(
+            config.mappings[0].from,
+            Source::Token(TokenPattern::Key {
+                key: KeyPattern::CharPair(CharPair {
+                    unshifted: 'a',
+                    shifted: 'A',
+                }),
+                mods: ModsPattern::AnyOf(vec![Mods::SHIFT]),
+            }),
+        );
+    }
+
+    #[test]
+    fn infers_us_punctuation_pairs() {
+        let config = finish(vec![
+            map(call("key", vec![infer_unshifted('1')]), call("send_key", vec![ch('x')])),
+            map(call("key", vec![infer_shifted('!')]), call("send_key", vec![ch('y')])),
+        ]).unwrap();
+        assert_eq!(
+            config.mappings[0].from,
+            Source::Token(TokenPattern::Key {
+                key: KeyPattern::CharPair(CharPair {
+                    unshifted: '1',
+                    shifted: '!',
+                }),
+                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
+            }),
+        );
+
+        assert_eq!(
+            config.mappings[1].from,
+            Source::Token(TokenPattern::Key {
+                key: KeyPattern::CharPair(CharPair {
+                    unshifted: '1',
+                    shifted: '!',
+                }),
+                mods: ModsPattern::AnyOf(vec![Mods::SHIFT]),
+            }),
+        );
+    }
+
+    #[test]
+    fn infers_space_as_same_char_pair() {
+        let config = finish(vec![map(
+            call("key", vec![infer_unshifted(' ')]),
+            call("send_key", vec![ch('x')]),
+        )])
+        .unwrap();
+
+        assert_eq!(
+            config.mappings[0].from,
+            Source::Token(TokenPattern::Key {
+                key: KeyPattern::CharPair(CharPair {
+                    unshifted: ' ',
+                    shifted: ' ',
+                }),
+                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
+            }),
+        );
+    }
+
+    #[test]
+    fn inherit_key_accepts_inferred_pair() {
+        let config = finish(vec![map(
+            call("key", vec![infer_unshifted('a')]),
+            call("inherit_key", vec![infer_unshifted('w')]),
+        )]).unwrap();
+        assert_eq!(
+            config.mappings[0].to,
+            Target::InheritToken(InheritToken::Key {
+                key: KeyPattern::CharPair(CharPair {
+                    unshifted: 'w',
+                    shifted: 'W',
+                }),
+            }),
+        );
+    }
+
+    #[test]
+    fn send_key_rejects_inferred_pair() {
+        let e = err(vec![map(
+            call("key", vec![infer_unshifted('a')]),
+            call("send_key", vec![infer_unshifted('x')]),
+        )]);
+        assert!(matches!(e, ErrorKind::PairUnsupported));
+    }
+
+    #[test]
+    fn cant_infer_non_us_pair() {
+        let e = err(vec![map(
+            call("key", vec![infer_unshifted('é')]),
+            call("send_key", vec![ch('x')]),
+        )]);
+        assert!(matches!(e, ErrorKind::CantInferTextPair { ch: 'é' }));
     }
 
     #[test]

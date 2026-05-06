@@ -2,122 +2,7 @@
 
 use std::borrow::Cow;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FileId(pub(crate) usize);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LineCtx {
-    pub file: FileId,
-    pub line: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    pub ctx: LineCtx,
-    pub start: usize,
-    pub end: usize,
-}
-
-impl Span {
-    fn at(ctx: LineCtx, pos: usize) -> Self {
-        Self {
-            ctx,
-            start: pos,
-            end: pos,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MappingOp {
-    Right, // =>
-    Left,  // <=
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Literal {
-    Bool(bool),
-    Int(i32),
-    String(String),
-    Char(char),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Expr {
-    Ident {
-        name: String,
-        span: Span,
-    },
-    Literal {
-        value: Literal,
-        span: Span,
-    },
-    Call {
-        name: String,
-        args: Vec<Expr>,
-        span: Span,
-    },
-    Pair {
-        unshifted: Box<Expr>,
-        shifted: Box<Expr>,
-        span: Span,
-    },
-}
-
-impl Expr {
-    pub fn span(&self) -> Span {
-        match self {
-            Expr::Ident { span, .. }
-            | Expr::Literal { span, .. }
-            | Expr::Call { span, .. }
-            | Expr::Pair { span, .. } => *span,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MappingAttr {
-    pub name: String,
-    pub args: Vec<Expr>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Stmt {
-    Directive {
-        name: String,
-        args: Vec<Expr>,
-        span: Span,
-    },
-    Definition {
-        kind: String,
-        args: Vec<Expr>,
-        span: Span,
-    },
-    Mapping {
-        attrs: Vec<MappingAttr>,
-        lhs: Expr,
-        op: MappingOp,
-        rhs: Expr,
-        span: Span,
-    },
-    OptionAssignment {
-        name: String,
-        val: Literal,
-        span: Span,
-    },
-}
-
-impl Stmt {
-    pub fn span(&self) -> Span {
-        match self {
-            Stmt::Directive { span, .. }
-            | Stmt::Definition { span, .. }
-            | Stmt::Mapping { span, .. }
-            | Stmt::OptionAssignment { span, .. } => *span,
-        }
-    }
-}
+use super::ast::*;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ErrorKind {
@@ -533,6 +418,26 @@ impl<'a> Cursor<'a> {
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         self.skip_ws();
+
+        // ~'X'
+        if self.peek_byte() == Some(b'~') {
+            let start = self.pos;
+            self.pos += 1;
+            self.skip_ws();
+
+            let known = self.parse_expr_atom()?;
+            let sp = known.span();
+            return Ok(Expr::InferPair {
+                known: Box::new(known),
+                side: PairSide::Shifted,
+                span: Span {
+                    ctx: self.ctx,
+                    start: self.base + start,
+                    end: sp.end,
+                },
+            });
+        }
+
         let lhs = self.parse_expr_atom()?;
         let after_lhs = self.pos;
         self.skip_ws();
@@ -544,13 +449,32 @@ impl<'a> Cursor<'a> {
         self.pos += 1;
         self.skip_ws();
 
+        // 'x'~
+        let b = self.peek_byte();
+        if b.is_none() || (matches!(b.unwrap(), b',' | b')') || is_ascii_ws(b.unwrap())) {
+            let sp = lhs.span();
+            return Ok(Expr::InferPair {
+                known: Box::new(lhs),
+                side: PairSide::Unshifted,
+                span: Span {
+                    ctx: self.ctx,
+                    start: sp.start,
+                    end: self.base + self.pos,
+                },
+            });
+        }
+
         let rhs = self.parse_expr_atom()?;
         let lhs_span = lhs.span();
         let rhs_span = rhs.span();
         Ok(Expr::Pair {
             unshifted: Box::new(lhs),
             shifted: Box::new(rhs),
-            span: Span { ctx: self.ctx, start: lhs_span.start, end: rhs_span.end },
+            span: Span {
+                ctx: self.ctx,
+                start: lhs_span.start,
+                end: rhs_span.end,
+            },
         })
     }
 
@@ -1210,6 +1134,18 @@ mod tests {
         }
     }
 
+    fn infer_pair(expr: &Expr) -> (PairSide, char) {
+        match expr {
+            Expr::InferPair { known, side, .. } => {
+                let Expr::Literal { value: Literal::Char(ch), .. } = &**known else {
+                    panic!("expected char literal in infer pair, got {known:?}");
+                };
+                (*side, *ch)
+            }
+            other => panic!("expected infer pair, got {other:?}"),
+        }
+    }
+
     #[test]
     fn ws_or_comment_only_parse_as_none() {
         assert!(matches!(parse_line("", DUMMY_CTX).unwrap(), None));
@@ -1516,10 +1452,35 @@ mod tests {
     fn rejects_trailing_pair_input() {
         for src in [
             r"utf8('a'~'A'~'B') => send_utf8('b')",
-            r"utf8('a'~) => send_utf8('b')",
+            r"utf8('a'~^) => send_utf8('b')",
         ] {
             assert!(parse_line(src, DUMMY_CTX).is_err(), "accepted {src:?}");
         }
+    }
+
+    #[test]
+    fn parses_infer_pair_unshifted_side() {
+        let (_, lhs, _, rhs) = mapping(r"key('a'~) => inherit_key('w'~)", DUMMY_CTX);
+        let lhs_arg = &call_args(&lhs)[0];
+        let rhs_arg = &call_args(&rhs)[0];
+        assert_eq!(infer_pair(lhs_arg), (PairSide::Unshifted, 'a'));
+        assert_eq!(infer_pair(rhs_arg), (PairSide::Unshifted, 'w'));
+    }
+
+    #[test]
+    fn parses_infer_pair_shifted_side() {
+        let (_, lhs, _, rhs) = mapping(r"key(~'A') => inherit_key(~'W')", DUMMY_CTX);
+        let lhs_arg = &call_args(&lhs)[0];
+        let rhs_arg = &call_args(&rhs)[0];
+        assert_eq!(infer_pair(lhs_arg), (PairSide::Shifted, 'A'));
+        assert_eq!(infer_pair(rhs_arg), (PairSide::Shifted, 'W'));
+    }
+
+    #[test]
+    fn parses_infer_pair_with_whitespace() {
+        let (_, lhs, _, rhs) = mapping(r"key('1' ~ ) => inherit_key( ~ '!' )", DUMMY_CTX);
+        assert_eq!(infer_pair(&call_args(&lhs)[0]), (PairSide::Unshifted, '1'));
+        assert_eq!(infer_pair(&call_args(&rhs)[0]), (PairSide::Shifted, '!'));
     }
 
     #[test]
