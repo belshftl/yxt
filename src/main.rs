@@ -14,7 +14,7 @@ use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
 use crate::config::loader::ConfigLoader;
-use crate::model::{Action, Event};
+use crate::model::{Action, Event, Signal, Source};
 use crate::runtime::children::{ActionManager, ServiceManager};
 use crate::runtime::cli::{Cli, config_path};
 use crate::runtime::io::{
@@ -31,7 +31,7 @@ use crate::unix::child::{
 };
 use crate::unix::fd::{NonblockingFd, ReadyFds, SelectFds, select};
 use crate::unix::pledge::try_pledge;
-use crate::unix::signal::SignalRegistry;
+use crate::unix::signal::{SignalError, SignalRegistry};
 use crate::unix::sock::{ControlSock, default_sock_path};
 use crate::unix::tty::{RawTerminal, get_winsize, set_winsize};
 
@@ -120,7 +120,7 @@ options:
         eprintln!("yxt v0.1.0-alpha");
         return Ok(0);
     }
-    if cli.command.is_empty() {
+    if !cli.check_config && !cli.dump_config && cli.command.is_empty() {
         eprint!("\
 usage: {argv0} [options] command [args ...]
 try '--help' for more info
@@ -190,7 +190,13 @@ try '--help' for more info
     signals.register(libc::SIGINT)?;
     signals.register(libc::SIGTERM)?;
     signals.register(libc::SIGWINCH)?;
-    // TODO: register signals from config for actions
+    for src in config.mappings.iter().map(|m| &m.from) {
+        if let Source::Event(Event::Signal(Signal(sig))) = src {
+            if let Err(e) = signals.register(*sig) && !matches!(e, SignalError::AlreadyRegistered(_)) {
+                return Err(AppError::Signal(e));
+            }
+        }
+    }
 
     let mut decoder = Decoder::new(DecoderConfig {
         mode: TermMode::LEGACY,
@@ -394,9 +400,17 @@ try '--help' for more info
                     libc::SIGWINCH => {
                         let ws = get_winsize(&stdin)?;
                         set_winsize(&pty_child.pty_master, &ws)?;
-                        // TODO: fire signal action(s) if registered
+                        let r = router.fire(RouteInput::Event(&Event::Signal(Signal(libc::SIGWINCH))))?;
+                        for effect in r.effects {
+                            apply_effect(&effect, &encoder, &mut master_queue, &mut actions)?;
+                        }
                     }
-                    _ => {} // TODO: fire signal action(s) if registered
+                    other => {
+                        let r = router.fire(RouteInput::Event(&Event::Signal(Signal(other))))?;
+                        for effect in r.effects {
+                            apply_effect(&effect, &encoder, &mut master_queue, &mut actions)?;
+                        }
+                    }
                 }
             }
         }
