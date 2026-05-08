@@ -295,11 +295,6 @@ impl ConfigLoader {
     }
 }
 
-fn tab_advance(col: usize, tabw: usize) -> usize {
-    let rem = col % tabw;
-    if rem == 0 { tabw } else { tabw - rem }
-}
-
 fn display_col_of(line: &str, byte: usize, tabw: usize) -> usize {
     let byte = byte.min(line.len());
     let mut col = 0;
@@ -308,7 +303,7 @@ fn display_col_of(line: &str, byte: usize, tabw: usize) -> usize {
             break;
         }
         if ch == '\t' {
-            col += tab_advance(col, tabw);
+            col += tabw - (col % tabw);
         } else {
             col += 1;
         }
@@ -321,7 +316,7 @@ fn tab_expand(line: &str, tabw: usize) -> String {
     let mut col = 0;
     for ch in line.chars() {
         if ch == '\t' {
-            let n = tab_advance(col, tabw);
+            let n = tabw - (col % tabw);
             out.extend(std::iter::repeat(' ').take(n));
             col += n;
         } else {

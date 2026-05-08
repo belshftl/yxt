@@ -1398,17 +1398,17 @@ mod tests {
 
     #[test]
     fn parses_nested_call_arg_if_supported() {
-        let (name, args) = directive(r#"@service exec("foo", "bar")"#, DUMMY_CTX);
+        let (name, args) = directive(r#"@service "sv" exec("foo", "bar")"#, DUMMY_CTX);
         assert_eq!(name, "service");
-        assert_eq!(args.len(), 1);
-
-        let expr = &args[0];
-        assert_eq!(call_name(expr), "exec");
-        let args = call_args(expr);
-
         assert_eq!(args.len(), 2);
-        assert_eq!(lit(&args[0]), &Literal::String("foo".to_owned()));
-        assert_eq!(lit(&args[1]), &Literal::String("bar".to_owned()));
+
+        let expr = &args[1];
+        assert_eq!(call_name(expr), "exec");
+        let call_args = call_args(expr);
+
+        assert_eq!(call_args.len(), 2);
+        assert_eq!(lit(&call_args[0]), &Literal::String("foo".to_owned()));
+        assert_eq!(lit(&call_args[1]), &Literal::String("bar".to_owned()));
     }
 
     #[test]
