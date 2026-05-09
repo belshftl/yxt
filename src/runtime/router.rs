@@ -367,7 +367,7 @@ key(f1, any) => send_key('x')
 
         assert!(fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
         assert!(fire_key(&router, Key::Function(1), Mods::CTRL).matched);
-        assert!(fire_key(&router, Key::Function(1), Mods::CTRL | Mods::ALT).matched);
+        assert!(fire_key(&router, Key::Function(1), Mods::ALT | Mods::CTRL).matched);
     }
 
     #[test]
@@ -379,7 +379,7 @@ key(f1, ctrl) => send_key('x')
 
         assert!(!fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
         assert!(!fire_key(&router, Key::Function(1), Mods::ALT).matched);
-        assert!(!fire_key(&router, Key::Function(1), Mods::CTRL | Mods::ALT).matched);
+        assert!(!fire_key(&router, Key::Function(1), Mods::ALT | Mods::CTRL).matched);
 
         let result = fire_key(&router, Key::Function(1), Mods::CTRL);
 
@@ -394,7 +394,7 @@ key(f1, ctrl) => send_key('x')
     fn target_token_modifiers_are_preserved() {
         let router = router(r#"
 @version 1
-key(f1) => send_key('x', ctrl, alt)
+key(f1) => send_key('x', ctrl & alt)
 "#);
 
         let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
@@ -402,7 +402,7 @@ key(f1) => send_key('x', ctrl, alt)
         assert!(result.matched);
         assert_eq!(
             result.effects,
-            vec![RouteEffect::Token(Token::press_utf8('x', Mods::CTRL | Mods::ALT))],
+            vec![RouteEffect::Token(Token::press_utf8('x', Mods::ALT | Mods::CTRL))],
         );
     }
 
@@ -543,7 +543,7 @@ key('x'~'X', shift) => send_key('s')
     }
 
     #[test]
-    fn char_pair_shift_side_matches_even_when_shift_modifier_is_reported() {
+    fn char_pair_shift_side_matches_even_when_shift_mod_is_reported() {
         let router = router(r#"
 @version 1
 key('x'~'X', shift) => send_key('s')
@@ -606,8 +606,8 @@ key(f1, any) => send_key('x')
             Mods::SHIFT,
             Mods::CTRL,
             Mods::ALT,
-            Mods::CTRL | Mods::ALT,
-            Mods::SHIFT | Mods::CTRL | Mods::ALT,
+            Mods::ALT | Mods::CTRL,
+            Mods::SHIFT | Mods::ALT | Mods::CTRL,
             Mods::SUPER | Mods::META,
         ] {
             assert!(fire_key(&router, Key::Function(1), mods).matched, "mods {mods:?} did not match");
@@ -618,19 +618,19 @@ key(f1, any) => send_key('x')
     fn named_key_mod_pattern_exact_mask_rejects_subset_and_superset() {
         let router = router(r#"
 @version 1
-key(f1, ctrl, alt) => send_key('x')
+key(f1, alt & ctrl) => send_key('x')
 "#);
 
         assert!(!fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
         assert!(!fire_key(&router, Key::Function(1), Mods::CTRL).matched);
         assert!(!fire_key(&router, Key::Function(1), Mods::ALT).matched);
-        assert!(!fire_key(&router, Key::Function(1), Mods::CTRL | Mods::ALT | Mods::SHIFT).matched);
+        assert!(!fire_key(&router, Key::Function(1), Mods::SHIFT | Mods::ALT | Mods::CTRL).matched);
 
-        assert!(fire_key(&router, Key::Function(1), Mods::CTRL | Mods::ALT).matched);
+        assert!(fire_key(&router, Key::Function(1), Mods::ALT | Mods::CTRL).matched);
     }
 
     #[test]
-    fn text_pair_default_none_matches_unshifted_logical_side_only() {
+    fn char_pair_default_none_matches_unshifted_logical_side_only() {
         let router = router(r#"
 @version 1
 key('x'~'X') => send_key('u')
@@ -647,7 +647,7 @@ key('x'~'X') => send_key('u')
     }
 
     #[test]
-    fn text_pair_shift_pattern_matches_shifted_logical_side() {
+    fn char_pair_shift_pattern_matches_shifted_logical_side() {
         let router = router(r#"
 @version 1
 key('x'~'X', shift) => send_key('s')
@@ -662,7 +662,7 @@ key('x'~'X', shift) => send_key('s')
     }
 
     #[test]
-    fn text_pair_ctrl_pattern_uses_logical_mods() {
+    fn char_pair_ctrl_pattern_uses_logical_mods() {
         let router = router(r#"
 @version 1
 key('x'~'X', ctrl) => send_key('c')
@@ -671,32 +671,32 @@ key('x'~'X', ctrl) => send_key('c')
         assert!(fire_utf8(&router, 'x', Mods::CTRL).matched);
 
         // actual shift mod is cleared for the unshifted side before matching
-        assert!(fire_utf8(&router, 'x', Mods::CTRL | Mods::SHIFT).matched);
+        assert!(fire_utf8(&router, 'x', Mods::SHIFT | Mods::CTRL).matched);
 
         assert!(!fire_utf8(&router, 'X', Mods::CTRL).matched);
-        assert!(!fire_utf8(&router, 'X', Mods::CTRL | Mods::SHIFT).matched);
+        assert!(!fire_utf8(&router, 'X', Mods::SHIFT | Mods::CTRL).matched);
         assert!(!fire_utf8(&router, 'x', Mods::ALT).matched);
     }
 
     #[test]
-    fn text_pair_ctrl_shift_pattern_matches_shifted_side_with_ctrl() {
+    fn char_pair_ctrl_shift_pattern_matches_shifted_side_with_ctrl() {
         let router = router(r#"
 @version 1
-key('x'~'X', ctrl, shift) => send_key('s')
+key('x'~'X', ctrl & shift) => send_key('s')
 "#);
 
         assert!(!fire_utf8(&router, 'x', Mods::CTRL).matched);
-        assert!(!fire_utf8(&router, 'x', Mods::CTRL | Mods::SHIFT).matched);
+        assert!(!fire_utf8(&router, 'x', Mods::SHIFT | Mods::CTRL).matched);
 
         assert!(fire_utf8(&router, 'X', Mods::CTRL).matched);
-        assert!(fire_utf8(&router, 'X', Mods::CTRL | Mods::SHIFT).matched);
+        assert!(fire_utf8(&router, 'X', Mods::SHIFT | Mods::CTRL).matched);
 
         assert!(!fire_utf8(&router, 'X', Mods::ALT).matched);
-        assert!(!fire_utf8(&router, 'X', Mods::CTRL | Mods::ALT).matched);
+        assert!(!fire_utf8(&router, 'X', Mods::ALT | Mods::CTRL).matched);
     }
 
     #[test]
-    fn same_char_text_pair_does_not_infer_shift_from_character() {
+    fn same_char_char_pair_does_not_infer_shift_from_character() {
         let router = router(r#"
 @version 1
 key(' '~' ') => send_key('u')
@@ -719,7 +719,7 @@ key(' '~' ', shift) => send_key('s')
     }
 
     #[test]
-    fn same_char_text_pair_any_matches_with_or_without_reported_shift() {
+    fn same_char_pair_any_matches_with_or_without_reported_shift() {
         let router = router(r#"
 @version 1
 key(' '~' ', any) => send_key('x')
@@ -728,7 +728,7 @@ key(' '~' ', any) => send_key('x')
         assert!(fire_utf8(&router, ' ', Mods::EMPTY).matched);
         assert!(fire_utf8(&router, ' ', Mods::SHIFT).matched);
         assert!(fire_utf8(&router, ' ', Mods::CTRL).matched);
-        assert!(fire_utf8(&router, ' ', Mods::CTRL | Mods::SHIFT).matched);
+        assert!(fire_utf8(&router, ' ', Mods::SHIFT | Mods::CTRL).matched);
     }
 
     #[test]
@@ -883,12 +883,12 @@ key('x'~'X', ctrl) => send_key('y')
     fn inherit_named_key_copies_actual_modifiers_and_kind() {
         let router = router(r#"
 @version 1
-key('x'~'X', ctrl, alt) => inherit_key(enter)
+key('x'~'X', ctrl & alt) => inherit_key(enter)
 "#);
 
         let token = Token::Utf8 {
             ch: 'x',
-            mods: Mods::CTRL | Mods::ALT,
+            mods: Mods::ALT | Mods::CTRL,
             kind: KeyEventKind::Release,
         };
 
@@ -899,7 +899,7 @@ key('x'~'X', ctrl, alt) => inherit_key(enter)
             result.effects,
             vec![RouteEffect::Token(Token::Key {
                 key: Key::Enter,
-                mods: Mods::CTRL | Mods::ALT,
+                mods: Mods::ALT | Mods::CTRL,
                 kind: KeyEventKind::Release,
             })],
         );

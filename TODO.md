@@ -5,4 +5,3 @@
 - reserve `unsafe!` for things like `raw_passthrough!` and later raw byte/seq ops
 - logfile / live debug trace
 - `unique_src!` to catch "why does this produce multiple keys" bugs
-- `&` / `|` infix operators and mod patterns

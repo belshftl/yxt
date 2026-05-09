@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::model::*;
-use super::ast::{Expr, Literal, MappingAttr, MappingOp, PairSide, Span, Stmt};
+use super::ast::{Expr, InfixOp, Literal, MappingAttr, MappingOp, PairSide, Span, Stmt};
 use super::options::Options;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,8 +158,17 @@ pub enum ErrorKind {
         name: String,
     },
 
-    #[error("invalid modifier")]
-    BadModifier,
+    #[error("expected concrete modifier set, not pattern")]
+    NeedNonPatModSet,
+
+    #[error("invalid modifier pattern/set")]
+    BadMods,
+
+    #[error("too many args for modifier pattern (expected 0 or 1)")]
+    TooManyModPatternArgs,
+
+    #[error("'any' must be the entire modifier pattern, not part of a pattern")]
+    AnyModsPatMustBeAlone,
 
     #[error("target-only token constructor cannot be used as mapping source")]
     SendTokenAsSource,
@@ -416,7 +425,7 @@ fn lower_key_source(args: Vec<Expr>, span: Span) -> Result<Source, ConfigError> 
         return Err(ConfigError { kind: ErrorKind::BadEntityArgs { kind: "key" }, span });
     };
     let (key, dfl) = lower_key_pattern_arg(key_expr, "key", span)?;
-    let mods = lower_mod_pattern(args.collect(), span, dfl)?;
+    let mods = lower_mods_pattern(args.collect(), span, dfl)?;
     Ok(Source::Token(TokenPattern::Key { key, mods }))
 }
 
@@ -425,7 +434,7 @@ fn lower_send_key(args: Vec<Expr>, span: Span) -> Result<Target, ConfigError> {
     let Some(key_expr) = args.next() else {
         return Err(ConfigError { kind: ErrorKind::BadEntityArgs { kind: "send_key" }, span });
     };
-    let mods = lower_mods(args, span)?;
+    let mods = lower_mods(args.collect(), span)?;
     match key_expr {
         Expr::Ident { name, .. } => Ok(Target::Token(Token::press_key(lower_key_name(&name, span)?, mods))),
         Expr::Literal { value: Literal::Char(ch), .. } => Ok(Target::Token(Token::press_utf8(ch, mods))),
@@ -571,40 +580,92 @@ fn infer_us_pair_from_shifted(ch: char) -> Option<CharPair> {
     })
 }
 
-fn lower_mod_pattern(args: Vec<Expr>, span: Span, dfl: Mods) -> Result<ModsPattern, ConfigError> {
-    if args.is_empty() {
-        return Ok(ModsPattern::AnyOf(vec![dfl]));
+fn lower_mods(args: Vec<Expr>, span: Span) -> Result<Mods, ConfigError> {
+    match args.len() {
+        0 => Ok(Mods::EMPTY),
+        1 => lower_mod_alts(args.into_iter().next().unwrap()),
+        _ => Err(ConfigError { kind: ErrorKind::TooManyModPatternArgs, span }),
     }
-
-    if args.len() == 1 {
-        if let Expr::Ident { name, .. } = &args[0] {
-            match name.as_str() {
-                "any" => return Ok(ModsPattern::Any),
-                "none" => return Ok(ModsPattern::AnyOf(vec![dfl])),
-                _ => {}
-            }
-        }
-    }
-
-    let mods = lower_mods(args, span)?;
-    Ok(ModsPattern::AnyOf(vec![mods]))
 }
 
-fn lower_mods(args: impl IntoIterator<Item = Expr>, span: Span) -> Result<Mods, ConfigError> {
-    let mut mods = Mods::EMPTY;
-
-    for arg in args {
-        let Expr::Ident { name, .. } = arg else {
-            return Err(ConfigError { kind: ErrorKind::BadModifier, span });
-        };
-        let bit = lower_mod_name(&name, span)?;
-        if (mods & bit) != Mods::EMPTY {
-            return Err(ConfigError { kind: ErrorKind::DuplicateModifier { name }, span });
+fn lower_mod_alts(expr: Expr) -> Result<Mods, ConfigError> {
+    fn lower_mod_mask(expr: Expr) -> Result<Mods, ConfigError> {
+        match expr {
+            Expr::Infix { op: InfixOp::BitAnd, lhs, rhs, ..} => {
+                let lhs = lower_mod_mask(*lhs)?;
+                let rhs = lower_mod_mask(*rhs)?;
+                Ok(lhs | rhs)
+            }
+            Expr::Infix { op: InfixOp::Or, span, .. } => Err(ConfigError { kind: ErrorKind::NeedNonPatModSet, span }),
+            Expr::Ident { name, span } => lower_mod_name(&name, span, false),
+            _ => Err(ConfigError { kind: ErrorKind::BadMods, span: expr.span() }),
         }
-        mods |= bit;
     }
+    let expr = unparen(expr);
+    match expr {
+        Expr::Infix { op: InfixOp::Or, span, .. } => Err(ConfigError { kind: ErrorKind::NeedNonPatModSet, span }),
+        other => Ok(lower_mod_mask(other)?),
+    }
+}
 
-    Ok(mods)
+fn lower_mods_pattern(args: Vec<Expr>, span: Span, dfl: Mods) -> Result<ModsPattern, ConfigError> {
+    match args.len() {
+        0 => Ok(ModsPattern::AnyOf(vec![dfl])),
+        1 => {
+            let expr = unparen(args.into_iter().next().unwrap());
+            if let Expr::Ident { name, .. } = &expr && name == "any" {
+                return Ok(ModsPattern::Any);
+            }
+            let mut alts = lower_mod_pat_alts(expr)?;
+            dedup_mods(&mut alts);
+            Ok(ModsPattern::AnyOf(alts))
+        }
+        _ => Err(ConfigError { kind: ErrorKind::TooManyModPatternArgs, span }),
+    }
+}
+
+fn lower_mod_pat_alts(expr: Expr) -> Result<Vec<Mods>, ConfigError> {
+    let expr = unparen(expr);
+    match expr {
+        Expr::Infix { op: InfixOp::BitAnd, lhs, rhs, .. } => {
+            let lhs = lower_mod_pat_alts(*lhs)?;
+            let rhs = lower_mod_pat_alts(*rhs)?;
+            let mut out = Vec::new();
+            for l in &lhs {
+                for r in &rhs {
+                    out.push(*l | *r);
+                }
+            }
+            Ok(out)
+        }
+        Expr::Infix { op: InfixOp::Or, lhs, rhs, .. } => {
+            let mut out = lower_mod_pat_alts(*lhs)?;
+            out.extend(lower_mod_pat_alts(*rhs)?);
+            Ok(out)
+        }
+        Expr::Ident { name, span } => Ok(vec![lower_mod_name(&name, span, true)?]),
+        _ => Err(ConfigError { kind: ErrorKind::BadMods, span: expr.span() }),
+    }
+}
+
+fn lower_mod_name(name: &str, span: Span, pattern: bool) -> Result<Mods, ConfigError> {
+    match name {
+        "none" => Ok(Mods::EMPTY),
+        "shift" => Ok(Mods::SHIFT),
+        "alt" => Ok(Mods::ALT),
+        "ctrl" => Ok(Mods::CTRL),
+        "super" => Ok(Mods::SUPER),
+        "hyper" => Ok(Mods::HYPER),
+        "meta" => Ok(Mods::META),
+        "any" => {
+            if pattern {
+                Err(ConfigError { kind: ErrorKind::AnyModsPatMustBeAlone, span })
+            } else {
+                Err(ConfigError { kind: ErrorKind::NeedNonPatModSet, span })
+            }
+        }
+        _ => Err(ConfigError { kind: ErrorKind::UnknownModifier { name: name.to_owned() }, span }),
+    }
 }
 
 fn lower_signal_name(name: &str, span: Span) -> Result<Signal, ConfigError> {
@@ -729,18 +790,6 @@ fn lower_key_name(name: &str, span: Span) -> Result<Key, ConfigError> {
     }
 }
 
-fn lower_mod_name(name: &str, span: Span) -> Result<Mods, ConfigError> {
-    match name {
-        "shift" => Ok(Mods::SHIFT),
-        "alt" => Ok(Mods::ALT),
-        "ctrl" => Ok(Mods::CTRL),
-        "super" => Ok(Mods::SUPER),
-        "hyper" => Ok(Mods::HYPER),
-        "meta" => Ok(Mods::META),
-        _ => Err(ConfigError { kind: ErrorKind::UnknownModifier { name: name.to_owned() }, span }),
-    }
-}
-
 fn parse_numbered_name(name: &str, prefix: &str) -> Option<u8> {
     let rest = name.strip_prefix(prefix)?;
     if rest.is_empty() {
@@ -800,6 +849,23 @@ fn expect_one_string(args: Vec<Expr>) -> Result<String, ()> {
     }
 
     Ok(value)
+}
+
+fn unparen(mut expr: Expr) -> Expr {
+    while let Expr::Paren { inner, .. } = expr {
+        expr = *inner;
+    }
+    expr
+}
+
+fn dedup_mods(values: &mut Vec<Mods>) {
+    let mut out = Vec::new();
+    for value in values.drain(..) {
+        if !out.contains(&value) {
+            out.push(value);
+        }
+    }
+    *values = out;
 }
 
 #[cfg(test)]
@@ -947,6 +1013,31 @@ mod tests {
         }
     }
 
+    fn bitand(lhs: Expr, rhs: Expr) -> Expr {
+        Expr::Infix {
+            op: InfixOp::BitAnd,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: sp(),
+        }
+    }
+
+    fn or(lhs: Expr, rhs: Expr) -> Expr {
+        Expr::Infix {
+            op: InfixOp::Or,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: sp(),
+        }
+    }
+
+    fn source_mods(source: &Source) -> &ModsPattern {
+        match source {
+            Source::Token(TokenPattern::Key { mods, .. }) => mods,
+            other => panic!("expected key token source, got {other:?}"),
+        }
+    }
+
     fn finish(stmts: Vec<Stmt>) -> Result<Config, ConfigError> {
         let mut b = ConfigBuilder::default();
         for stmt in stmts {
@@ -1024,7 +1115,7 @@ mod tests {
     }
 
     #[test]
-    fn service_shell_is_stored() {
+    fn service_sh_is_stored() {
         let config = finish(vec![directive(
             "service",
             vec![string("helper"), call("sh", vec![string("echo hi")])],
@@ -1066,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn command_exec_requires_string_args_and_nonempty_program() {
+    fn command_exec_requires_string_args_and_nonempty_argv0() {
         for command in [
             call("exec", vec![]),
             call("exec", vec![string("")]),
@@ -1082,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn command_shell_requires_one_nonempty_string() {
+    fn command_sh_requires_one_nonempty_string() {
         for command in [
             call("sh", vec![]),
             call("sh", vec![string("a"), string("b")]),
@@ -1107,72 +1198,64 @@ mod tests {
     }
 
     #[test]
-    fn key_source_defaults_to_no_mods() {
-        let config = finish(vec![map(
-            call("key", vec![ident("f1")]),
-            call("send_key", vec![ch('x')]),
-        )]).unwrap();
-        assert_eq!(
-            config.mappings,
-            vec![Mapping {
-                from: Source::Token(TokenPattern::Key {
-                    key: KeyPattern::Named(Key::Function(1)),
-                    mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
-                }),
-                to: Target::Token(Token::press_utf8('x', Mods::EMPTY)),
-                attrs: no_attrs(),
-                span: sp(),
-            }],
-        );
-    }
-
-    #[test]
-    fn key_source_can_match_any_mods() {
-        let config = finish(vec![map(
-            call("key", vec![ident("tab"), ident("any")]),
-            call("inherit_key", vec![pair('q', 'Q')]),
-        )]).unwrap();
+    fn key_accepts_known_key_names_and_function_keys() {
+        let config = finish(vec![
+            map(call("key", vec![ident("esc")]), call("send_key", vec![ch('a')])),
+            map(call("key", vec![ident("enter")]), call("send_key", vec![ch('b')])),
+            map(call("key", vec![ident("left")]), call("send_key", vec![ch('c')])),
+            map(call("key", vec![ident("f35")]), call("send_key", vec![ch('d')])),
+            map(call("key", vec![ident("kp_9")]), call("send_key", vec![ch('e')])),
+        ]).unwrap();
         assert_eq!(
             config.mappings[0].from,
             Source::Token(TokenPattern::Key {
-                key: KeyPattern::Named(Key::Tab),
-                mods: ModsPattern::Any,
+                key: KeyPattern::Named(Key::Esc),
+                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
             }),
         );
-    }
-
-    #[test]
-    fn key_source_can_match_explicit_no_mods() {
-        let config = finish(vec![map(
-            call("key", vec![ident("tab"), ident("none")]),
-            call("send_key", vec![ident("enter")]),
-        )]).unwrap();
         assert_eq!(
-            config.mappings[0].from,
+            config.mappings[1].from,
             Source::Token(TokenPattern::Key {
-                key: KeyPattern::Named(Key::Tab),
+                key: KeyPattern::Named(Key::Enter),
+                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
+            }),
+        );
+        assert_eq!(
+            config.mappings[2].from,
+            Source::Token(TokenPattern::Key {
+                key: KeyPattern::Named(Key::Arrow(Direction::Left)),
+                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
+            }),
+        );
+        assert_eq!(
+            config.mappings[3].from,
+            Source::Token(TokenPattern::Key {
+                key: KeyPattern::Named(Key::Function(35)),
+                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
+            }),
+        );
+        assert_eq!(
+            config.mappings[4].from,
+            Source::Token(TokenPattern::Key {
+                key: KeyPattern::Named(Key::Keypad(KeypadKey::Digit(9))),
                 mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
             }),
         );
     }
 
     #[test]
-    fn key_source_can_match_exact_mod_mask() {
-        let config = finish(vec![map(
-            call("key", vec![ident("f1"), ident("ctrl"), ident("alt")]),
-            call("send_key", vec![ch('x')]),
-        )]).unwrap();
-        assert_eq!(
-            config.mappings[0].from,
-            Source::Token(TokenPattern::Key {
-                key: KeyPattern::Named(Key::Function(1)),
-                mods: ModsPattern::AnyOf(vec![Mods::CTRL | Mods::ALT]),
-            }),
-        );
+    fn key_rejects_unknown_or_out_of_range_key_names() {
+        for name in ["bogus", "f0", "f36", "kp_10", "kp_"] {
+            let e = err(vec![map(
+                call("key", vec![ident(name)]),
+                call("send_key", vec![ch('x')]),
+            )]);
+            assert!(matches!(e, ErrorKind::UnknownKey { name: got } if got == name));
+        }
     }
 
     #[test]
-    fn key_source_accepts_char_pair() {
+    fn key_accepts_char_pair() {
         let config = finish(vec![map(
             call("key", vec![pair('d', 'D'), ident("shift")]),
             call("inherit_key", vec![pair('w', 'W')]),
@@ -1259,7 +1342,7 @@ mod tests {
     }
 
     #[test]
-    fn inherit_key_rejects_unpaired_char_for_now() {
+    fn inherit_key_rejects_unpaired_char() {
         let e = err(vec![map(
             call("key", vec![ident("f1")]),
             call("inherit_key", vec![ch('🙂')]),
@@ -1362,7 +1445,7 @@ mod tests {
     }
 
     #[test]
-    fn inherit_key_accepts_inferred_pair() {
+    fn inherit_key_accepts_infer_pair() {
         let config = finish(vec![map(
             call("key", vec![infer_unshifted('a')]),
             call("inherit_key", vec![infer_unshifted('w')]),
@@ -1379,7 +1462,7 @@ mod tests {
     }
 
     #[test]
-    fn send_key_rejects_inferred_pair() {
+    fn send_key_rejects_infer_pair() {
         let e = err(vec![map(
             call("key", vec![infer_unshifted('a')]),
             call("send_key", vec![infer_unshifted('x')]),
@@ -1394,6 +1477,114 @@ mod tests {
             call("send_key", vec![ch('x')]),
         )]);
         assert!(matches!(e, ErrorKind::CantInferTextPair { ch: 'é' }));
+    }
+
+    #[test]
+    fn key_mod_pat_bitand_lowers_to_one_mask() {
+        let config = finish(vec![map(
+            call("key", vec![ident("f1"), bitand(ident("shift"), ident("ctrl"))]),
+            call("send_key", vec![ch('x')]),
+        )]).unwrap();
+        assert_eq!(
+            source_mods(&config.mappings[0].from),
+            &ModsPattern::AnyOf(vec![Mods::SHIFT | Mods::CTRL]),
+        );
+    }
+
+    #[test]
+    fn key_mod_pat_or_lowers_to_alts() {
+        let config = finish(vec![map(
+            call("key", vec![ident("f1"), or(ident("none"), ident("shift"))]),
+            call("send_key", vec![ch('x')]),
+        )]).unwrap();
+        assert_eq!(
+            source_mods(&config.mappings[0].from),
+            &ModsPattern::AnyOf(vec![
+                Mods::EMPTY,
+                Mods::SHIFT,
+            ]),
+        );
+    }
+
+    #[test]
+    fn key_mod_pat_bitand_binds_inside_or() {
+        let config = finish(vec![map(
+            call("key", vec![ident("f1"), or(bitand(ident("shift"), ident("ctrl")), ident("super"))]),
+            call("send_key", vec![ch('x')]),
+        )]).unwrap();
+        assert_eq!(
+            source_mods(&config.mappings[0].from),
+            &ModsPattern::AnyOf(vec![
+                Mods::SHIFT | Mods::CTRL,
+                Mods::SUPER,
+            ]),
+        );
+    }
+
+    #[test]
+    fn key_mod_pat_can_distribute_bitand_over_or() {
+        let config = finish(vec![map(
+            call("key", vec![ident("f1"), bitand(ident("ctrl"), or(ident("shift"), ident("super")))]),
+            call("send_key", vec![ch('x')]),
+        )]).unwrap();
+        assert_eq!(
+            source_mods(&config.mappings[0].from),
+            &ModsPattern::AnyOf(vec![
+                Mods::CTRL | Mods::SHIFT,
+                Mods::CTRL | Mods::SUPER,
+            ]),
+        );
+    }
+
+    #[test]
+    fn key_mod_pat_rejects_old_varargs_form() {
+        let e = finish(vec![map(
+            call("key", vec![ident("f1"), ident("shift"), ident("ctrl")]),
+            call("send_key", vec![ch('x')]),
+        )]).unwrap_err();
+        assert!(matches!(e, ConfigError { kind: ErrorKind::TooManyModPatternArgs, .. }));
+    }
+
+    #[test]
+    fn key_mod_pat_rejects_any_inside_or() {
+        let e = finish(vec![map(
+            call("key", vec![ident("f1"), or(ident("any"), ident("shift"))]),
+            call("send_key", vec![ch('x')]),
+        )]).unwrap_err();
+        assert!(matches!(e, ConfigError { kind: ErrorKind::AnyModsPatMustBeAlone, .. }));
+    }
+
+    #[test]
+    fn key_mod_pat_rejects_any_inside_bitand() {
+        let e = finish(vec![map(
+            call("key", vec![ident("f1"), bitand(ident("any"), ident("shift"))]),
+            call("send_key", vec![ch('x')]),
+        )]).unwrap_err();
+        assert!(matches!(e, ConfigError { kind: ErrorKind::AnyModsPatMustBeAlone, .. }));
+    }
+
+    #[test]
+    fn unknown_or_non_ident_mod_is_rejected() {
+        let e = err(vec![map(
+            call("key", vec![ident("f1"), ident("bogus")]),
+            call("send_key", vec![ch('x')]),
+        )]);
+        assert!(matches!(e, ErrorKind::UnknownModifier { name } if name == "bogus"));
+
+        let e = err(vec![map(
+            call("key", vec![ident("f1"), string("ctrl")]),
+            call("send_key", vec![ch('x')]),
+        )]);
+        assert!(matches!(e, ErrorKind::BadMods { .. }));
+    }
+
+    #[test]
+    fn send_key_rejects_mod_pat() {
+        let e = finish(vec![map(
+            call("key", vec![ident("f1"), ident("any")]),
+            call("send_key", vec![ch('x'), or(ident("shift"), ident("super"))]),
+        )]).unwrap_err();
+        assert!(matches!(e, ConfigError { kind: ErrorKind::NeedNonPatModSet, .. }));
     }
 
     #[test]
@@ -1558,99 +1749,6 @@ mod tests {
             call("sh", vec![string("x")]),
         )]);
         assert!(matches!(e, ErrorKind::UnsupportedSignal { name, .. } if name == "SIGSEGV"));
-    }
-
-    #[test]
-    fn key_accepts_known_key_names_and_function_keys() {
-        let config = finish(vec![
-            map(call("key", vec![ident("esc")]), call("send_key", vec![ch('a')])),
-            map(call("key", vec![ident("enter")]), call("send_key", vec![ch('b')])),
-            map(call("key", vec![ident("left")]), call("send_key", vec![ch('c')])),
-            map(call("key", vec![ident("f35")]), call("send_key", vec![ch('d')])),
-            map(call("key", vec![ident("kp_9")]), call("send_key", vec![ch('e')])),
-        ]).unwrap();
-        assert_eq!(
-            config.mappings[0].from,
-            Source::Token(TokenPattern::Key {
-                key: KeyPattern::Named(Key::Esc),
-                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
-            }),
-        );
-        assert_eq!(
-            config.mappings[1].from,
-            Source::Token(TokenPattern::Key {
-                key: KeyPattern::Named(Key::Enter),
-                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
-            }),
-        );
-        assert_eq!(
-            config.mappings[2].from,
-            Source::Token(TokenPattern::Key {
-                key: KeyPattern::Named(Key::Arrow(Direction::Left)),
-                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
-            }),
-        );
-        assert_eq!(
-            config.mappings[3].from,
-            Source::Token(TokenPattern::Key {
-                key: KeyPattern::Named(Key::Function(35)),
-                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
-            }),
-        );
-        assert_eq!(
-            config.mappings[4].from,
-            Source::Token(TokenPattern::Key {
-                key: KeyPattern::Named(Key::Keypad(KeypadKey::Digit(9))),
-                mods: ModsPattern::AnyOf(vec![Mods::EMPTY]),
-            }),
-        );
-    }
-
-    #[test]
-    fn key_rejects_unknown_or_out_of_range_key_names() {
-        for name in ["bogus", "f0", "f36", "kp_10", "kp_"] {
-            let e = err(vec![map(
-                call("key", vec![ident(name)]),
-                call("send_key", vec![ch('x')]),
-            )]);
-            assert!(matches!(e, ErrorKind::UnknownKey { name: got } if got == name));
-        }
-    }
-
-    #[test]
-    fn modifiers_are_lowered_and_duplicates_rejected() {
-        let config = finish(vec![map(
-            call("key", vec![ident("f1"), ident("shift"), ident("alt"), ident("ctrl")]),
-            call("send_key", vec![ch('x')]),
-        )]).unwrap();
-        assert_eq!(
-            config.mappings[0].from,
-            Source::Token(TokenPattern::Key {
-                key: KeyPattern::Named(Key::Function(1)),
-                mods: ModsPattern::AnyOf(vec![Mods::SHIFT | Mods::ALT | Mods::CTRL]),
-            }),
-        );
-
-        let e = err(vec![map(
-            call("key", vec![ident("f1"), ident("ctrl"), ident("ctrl")]),
-            call("send_key", vec![ch('x')]),
-        )]);
-        assert!(matches!(e, ErrorKind::DuplicateModifier { name } if name == "ctrl"));
-    }
-
-    #[test]
-    fn unknown_or_non_ident_modifier_is_rejected() {
-        let e = err(vec![map(
-            call("key", vec![ident("f1"), ident("bogus")]),
-            call("send_key", vec![ch('x')]),
-        )]);
-        assert!(matches!(e, ErrorKind::UnknownModifier { name } if name == "bogus"));
-
-        let e = err(vec![map(
-            call("key", vec![ident("f1"), string("ctrl")]),
-            call("send_key", vec![ch('x')]),
-        )]);
-        assert!(matches!(e, ErrorKind::BadModifier { .. }));
     }
 
     #[test]

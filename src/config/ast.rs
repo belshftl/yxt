@@ -40,6 +40,12 @@ pub enum PairSide {
     Shifted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfixOp {
+    BitAnd,
+    Or,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Ident {
@@ -65,6 +71,16 @@ pub enum Expr {
         side: PairSide,
         span: Span,
     },
+    Infix {
+        op: InfixOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+        span: Span,
+    },
+    Paren {
+        inner: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -74,7 +90,9 @@ impl Expr {
             | Expr::Literal { span, .. }
             | Expr::Call { span, .. }
             | Expr::Pair { span, .. }
-            | Expr::InferPair { span, .. } => *span,
+            | Expr::InferPair { span, .. }
+            | Expr::Infix { span, .. }
+            | Expr::Paren { span, .. } => *span,
         }
     }
 }

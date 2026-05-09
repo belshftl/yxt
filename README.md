@@ -54,7 +54,14 @@ key('l'~, any) => inherit_key(right)
 
 omitting a side of a pair infers the other side; this is only supported for keys on standard US layouts (e.g QWERTY). the second argument specifies the modifiers to match, defaulting to `none`; `any` means any modifiers, so shift+k (`K`) maps to shift+up, ctrl+k maps to ctrl+up, etc.
 
-omitting the left side of a pair works as you'd expect; `key(~'!')` is equivalent to `key('1'~'!', shift)`.
+omitting the left side of a pair works as you'd expect; `key(~'!')` is equivalent to `key('1'~'!', shift)`. the modifier syntax is:
+- `a & b` makes a modifier set, so `shift & ctrl` requires both shift and ctrl
+- `a || b` in a modifier pattern matches either side, so `shift || ctrl` matches either shift or ctrl and `none || shift` matches either no mods or shift
+- `&` parses before `||`, so `shift & ctrl || super` matches either shift+ctrl or super
+- parentheses are supported, so `(shift & ctrl) || super` is equivalent to the above, and `shift & (ctrl || super)` matches either shift+ctrl or shift+super
+- `any` is a special wildcard modifier pattern, not a modifier
+
+`key` takes a modifier pattern, `send_key` takes a modifier set (so only `&`, no `||` or `any`)
 
 you can also do `y <= x` as syntactic sugar for `x => y`; this will come up in a bit too.
 

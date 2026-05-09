@@ -134,6 +134,10 @@ impl<'a> Cursor<'a> {
         &self.s[self.pos..]
     }
 
+    fn starts_with(&self, bytes: &[u8]) -> bool {
+        self.s.as_bytes()[self.pos..].starts_with(bytes)
+    }
+
     fn peek_byte(&self) -> Option<u8> {
         self.s.as_bytes().get(self.pos).copied()
     }
@@ -417,6 +421,74 @@ impl<'a> Cursor<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        self.parse_or_expr()
+    }
+
+    fn parse_or_expr(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.parse_bitand_expr()?;
+        loop {
+            let after_lhs = self.pos;
+            self.skip_ws();
+
+            if self.peek_byte() == Some(b'|') && !self.starts_with(b"||") {
+                return Err(self.err_here(ErrorKind::Expected { what: "||" }));
+            }
+
+            if !self.starts_with(b"||") {
+                self.pos = after_lhs;
+                return Ok(lhs);
+            }
+
+            self.pos += 2;
+            self.skip_ws();
+
+            let rhs = self.parse_bitand_expr()?;
+            let lhs_span = lhs.span();
+            let rhs_span = rhs.span();
+            lhs = Expr::Infix {
+                op: InfixOp::Or,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span: Span {
+                    ctx: self.ctx,
+                    start: lhs_span.start,
+                    end: rhs_span.end,
+                },
+            };
+        }
+    }
+
+    fn parse_bitand_expr(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.parse_pair_expr()?;
+        loop {
+            let after_lhs = self.pos;
+            self.skip_ws();
+
+            if self.peek_byte() != Some(b'&') {
+                self.pos = after_lhs;
+                return Ok(lhs);
+            }
+
+            self.pos += 1;
+            self.skip_ws();
+
+            let rhs = self.parse_pair_expr()?;
+            let lhs_span = lhs.span();
+            let rhs_span = rhs.span();
+            lhs = Expr::Infix {
+                op: InfixOp::BitAnd,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span: Span {
+                    ctx: self.ctx,
+                    start: lhs_span.start,
+                    end: rhs_span.end,
+                },
+            };
+        }
+    }
+
+    fn parse_pair_expr(&mut self) -> Result<Expr, ParseError> {
         self.skip_ws();
 
         // ~'X'
@@ -425,7 +497,7 @@ impl<'a> Cursor<'a> {
             self.pos += 1;
             self.skip_ws();
 
-            let known = self.parse_expr_atom()?;
+            let known = self.parse_atom_expr()?;
             let sp = known.span();
             return Ok(Expr::InferPair {
                 known: Box::new(known),
@@ -438,7 +510,7 @@ impl<'a> Cursor<'a> {
             });
         }
 
-        let lhs = self.parse_expr_atom()?;
+        let lhs = self.parse_atom_expr()?;
         let after_lhs = self.pos;
         self.skip_ws();
 
@@ -451,7 +523,7 @@ impl<'a> Cursor<'a> {
 
         // 'x'~
         let b = self.peek_byte();
-        if b.is_none() || (matches!(b.unwrap(), b',' | b')') || is_ascii_ws(b.unwrap())) {
+        if b.is_none() || (matches!(b.unwrap(), b',' | b')' | b'&' | b'|') || is_ascii_ws(b.unwrap())) {
             let sp = lhs.span();
             return Ok(Expr::InferPair {
                 known: Box::new(lhs),
@@ -464,7 +536,7 @@ impl<'a> Cursor<'a> {
             });
         }
 
-        let rhs = self.parse_expr_atom()?;
+        let rhs = self.parse_atom_expr()?;
         let lhs_span = lhs.span();
         let rhs_span = rhs.span();
         Ok(Expr::Pair {
@@ -478,7 +550,7 @@ impl<'a> Cursor<'a> {
         })
     }
 
-    fn parse_expr_atom(&mut self) -> Result<Expr, ParseError> {
+    fn parse_atom_expr(&mut self) -> Result<Expr, ParseError> {
         self.skip_ws();
         match self.peek_byte() {
             Some(b'"') => {
@@ -538,6 +610,23 @@ impl<'a> Cursor<'a> {
                 let value = parse_i32(text, span)?;
                 Ok(Expr::Literal {
                     value: Literal::Int(value),
+                    span,
+                })
+            }
+            Some(b'(') => {
+                let start = self.pos;
+                self.pos += 1;
+
+                let inner = self.parse_expr()?;
+                self.skip_ws();
+                if self.peek_byte() != Some(b')') {
+                    return Err(self.err_here(ErrorKind::Expected { what: ")" }));
+                }
+                self.pos += 1;
+
+                let span = self.span_from(start);
+                Ok(Expr::Paren {
+                    inner: Box::new(inner),
                     span,
                 })
             }
@@ -1091,36 +1180,43 @@ mod tests {
         }
     }
 
-    fn call_name(expr: &Expr) -> &str {
+    fn unparen(expr: &Expr) -> &Expr {
         match expr {
+            Expr::Paren { inner, .. } => unparen(inner),
+            other => other,
+        }
+    }
+
+    fn call_name(expr: &Expr) -> &str {
+        match unparen(expr) {
             Expr::Call { name, .. } => name,
             other => panic!("expected call, got {other:?}"),
         }
     }
 
     fn call_args(expr: &Expr) -> &[Expr] {
-        match expr {
+        match unparen(expr) {
             Expr::Call { args, .. } => args,
             other => panic!("expected call, got {other:?}"),
         }
     }
 
     fn ident_name(expr: &Expr) -> &str {
-        match expr {
+        match unparen(expr) {
             Expr::Ident { name, .. } => name,
             other => panic!("expected ident, got {other:?}"),
         }
     }
 
     fn lit(expr: &Expr) -> &Literal {
-        match expr {
+        match unparen(expr) {
             Expr::Literal { value, .. } => value,
             other => panic!("expected literal, got {other:?}"),
         }
     }
 
     fn pair(expr: &Expr) -> (char, char) {
-        match expr {
+        match unparen(expr) {
             Expr::Pair { unshifted, shifted, .. } => {
                 let Literal::Char(a) = lit(unshifted) else {
                     panic!("expected char literal on pair lhs, got {unshifted:?}");
@@ -1135,7 +1231,7 @@ mod tests {
     }
 
     fn infer_pair(expr: &Expr) -> (PairSide, char) {
-        match expr {
+        match unparen(expr) {
             Expr::InferPair { known, side, .. } => {
                 let Expr::Literal { value: Literal::Char(ch), .. } = &**known else {
                     panic!("expected char literal in infer pair, got {known:?}");
@@ -1143,6 +1239,13 @@ mod tests {
                 (*side, *ch)
             }
             other => panic!("expected infer pair, got {other:?}"),
+        }
+    }
+
+    fn infix(expr: &Expr) -> (InfixOp, &Expr, &Expr) {
+        match unparen(expr) {
+            Expr::Infix { op, lhs, rhs, .. } => (*op, lhs, rhs),
+            other => panic!("expected infix expr, got {other:?}"),
         }
     }
 
@@ -1211,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_char_literals() {
+    fn parses_charlits() {
         assert_eq!(opt("x = 'a'", DUMMY_CTX).1, Literal::Char('a'));
         assert_eq!(opt("x = 'å'", DUMMY_CTX).1, Literal::Char('å'));
         assert_eq!(opt(r"x = '\''", DUMMY_CTX).1, Literal::Char('\''));
@@ -1224,7 +1327,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_char_literals() {
+    fn rejects_bad_charlits() {
         for src in [
             "x = ''",
             "x = 'ab'",
@@ -1365,7 +1468,7 @@ mod tests {
     }
 
     #[test]
-    fn mapping_operator_inside_call_args_does_not_count() {
+    fn mapping_operator_inside_call_args_doesnt_count() {
         let (attrs, lhs, op, rhs) = mapping(
             r#"outer(inner("=>")) => send_utf8('x')"#,
             DUMMY_CTX,
@@ -1386,33 +1489,36 @@ mod tests {
 
     #[test]
     fn parses_call_args() {
-        let (_, lhs, _, _) = mapping(r#"key(up, ctrl, alt) => send_utf8('x')"#, DUMMY_CTX);
+        let (_, lhs, _, _) = mapping(r#"key(up, ctrl) => send_utf8('x')"#, DUMMY_CTX);
         assert_eq!(call_name(&lhs), "key");
         let args = call_args(&lhs);
 
-        assert_eq!(args.len(), 3);
+        assert_eq!(args.len(), 2);
         assert_eq!(ident_name(&args[0]), "up");
         assert_eq!(ident_name(&args[1]), "ctrl");
-        assert_eq!(ident_name(&args[2]), "alt");
     }
 
     #[test]
-    fn parses_nested_call_arg_if_supported() {
-        let (name, args) = directive(r#"@service "sv" exec("foo", "bar")"#, DUMMY_CTX);
-        assert_eq!(name, "service");
+    fn parses_nested_calls() {
+        let (name, toplv_args) = directive(r#"@foo a(b("c"), "d")"#, DUMMY_CTX);
+        assert_eq!(name, "foo");
+        assert_eq!(toplv_args.len(), 1);
+
+        let expr = &toplv_args[0];
+        assert_eq!(call_name(expr), "a");
+        let args = call_args(expr);
+
         assert_eq!(args.len(), 2);
+        assert_eq!(lit(&args[1]), &Literal::String("d".to_owned()));
 
-        let expr = &args[1];
-        assert_eq!(call_name(expr), "exec");
-        let call_args = call_args(expr);
-
-        assert_eq!(call_args.len(), 2);
-        assert_eq!(lit(&call_args[0]), &Literal::String("foo".to_owned()));
-        assert_eq!(lit(&call_args[1]), &Literal::String("bar".to_owned()));
+        let expr = &args[0];
+        assert_eq!(call_name(expr), "b");
+        let args = call_args(expr);
+        assert_eq!(lit(&args[0]), &Literal::String("c".to_owned()));
     }
 
     #[test]
-    fn parses_char_pair_args() {
+    fn parses_char_pairs() {
         let (attrs, lhs, op, rhs) = mapping(
             r"utf8('d'~'D', any) => inherit_pair_utf8('w'~'W')",
             DUMMY_CTX,
@@ -1477,10 +1583,102 @@ mod tests {
     }
 
     #[test]
-    fn parses_infer_pair_with_whitespace() {
+    fn parses_infer_pair_with_ws() {
         let (_, lhs, _, rhs) = mapping(r"key('1' ~ ) => inherit_key( ~ '!' )", DUMMY_CTX);
         assert_eq!(infer_pair(&call_args(&lhs)[0]), (PairSide::Unshifted, '1'));
         assert_eq!(infer_pair(&call_args(&rhs)[0]), (PairSide::Shifted, '!'));
+    }
+
+    #[test]
+    fn parses_infix_bitand() {
+        let (_, lhs, _, _) = mapping("key(f1, shift & ctrl) => send_key('x')", DUMMY_CTX);
+
+        let args = call_args(&lhs);
+        let (op, lhs, rhs) = infix(&args[1]);
+
+        assert_eq!(op, InfixOp::BitAnd);
+        assert_eq!(ident_name(lhs), "shift");
+        assert_eq!(ident_name(rhs), "ctrl");
+    }
+
+    #[test]
+    fn parses_infix_or() {
+        let (_, lhs, _, _) = mapping("key(f1, none || shift) => send_key('x')", DUMMY_CTX);
+
+        let args = call_args(&lhs);
+        let (op, lhs, rhs) = infix(&args[1]);
+
+        assert_eq!(op, InfixOp::Or);
+        assert_eq!(ident_name(lhs), "none");
+        assert_eq!(ident_name(rhs), "shift");
+    }
+
+    #[test]
+    fn infix_bitand_before_or() {
+        let (_, lhs, _, _) = mapping("key(f1, shift & ctrl || super) => send_key('x')", DUMMY_CTX);
+
+        let args = call_args(&lhs);
+        let (op, lhs, rhs) = infix(&args[1]);
+
+        assert_eq!(op, InfixOp::Or);
+        assert_eq!(ident_name(rhs), "super");
+
+        let (lhs_op, lhs_lhs, lhs_rhs) = infix(lhs);
+
+        assert_eq!(lhs_op, InfixOp::BitAnd);
+        assert_eq!(ident_name(lhs_lhs), "shift");
+        assert_eq!(ident_name(lhs_rhs), "ctrl");
+    }
+
+    #[test]
+    fn parses_infix_with_paren() {
+        let (_, lhs, _, _) = mapping("key(f1, shift & (ctrl || super)) => send_key('x')", DUMMY_CTX);
+
+        let args = call_args(&lhs);
+        let (op, lhs, rhs) = infix(&args[1]);
+
+        assert_eq!(op, InfixOp::BitAnd);
+        assert_eq!(ident_name(lhs), "shift");
+
+        let (rhs_op, rhs_lhs, rhs_rhs) = infix(rhs);
+
+        assert_eq!(rhs_op, InfixOp::Or);
+        assert_eq!(ident_name(rhs_lhs), "ctrl");
+        assert_eq!(ident_name(rhs_rhs), "super");
+    }
+
+    #[test]
+    fn parses_chained_bitand_left_associative() {
+        let (_, lhs, _, _) = mapping("key(f1, shift & alt & ctrl) => send_key('x')", DUMMY_CTX);
+
+        let args = call_args(&lhs);
+        let (op, lhs, rhs) = infix(&args[1]);
+
+        assert_eq!(op, InfixOp::BitAnd);
+        assert_eq!(ident_name(rhs), "ctrl");
+
+        let (lhs_op, lhs_lhs, lhs_rhs) = infix(lhs);
+
+        assert_eq!(lhs_op, InfixOp::BitAnd);
+        assert_eq!(ident_name(lhs_lhs), "shift");
+        assert_eq!(ident_name(lhs_rhs), "alt");
+    }
+
+    #[test]
+    fn parses_chained_or_left_associative() {
+        let (_, lhs, _, _) = mapping("key(f1, none || shift || ctrl) => send_key('x')", DUMMY_CTX);
+
+        let args = call_args(&lhs);
+        let (op, lhs, rhs) = infix(&args[1]);
+
+        assert_eq!(op, InfixOp::Or);
+        assert_eq!(ident_name(rhs), "ctrl");
+
+        let (lhs_op, lhs_lhs, lhs_rhs) = infix(lhs);
+
+        assert_eq!(lhs_op, InfixOp::Or);
+        assert_eq!(ident_name(lhs_lhs), "none");
+        assert_eq!(ident_name(lhs_rhs), "shift");
     }
 
     #[test]
@@ -1508,7 +1706,7 @@ mod tests {
     }
 
     #[test]
-    fn mapping_attrs_may_touch_lhs_without_whitespace() {
+    fn mapping_attrs_may_touch_lhs_without_ws() {
         let (attrs, lhs, op, rhs) = mapping(
             r#"passthrough!key(space) => sh("x")"#,
             DUMMY_CTX,
@@ -1530,7 +1728,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_identifiers() {
+    fn rejects_malformed_idents() {
         assert!(parse_line("1abc = true", DUMMY_CTX).is_err());
         assert!(parse_line("@1abc true", DUMMY_CTX).is_err());
         assert!(parse_line(r#"define 1abc "x""#, DUMMY_CTX).is_err());
