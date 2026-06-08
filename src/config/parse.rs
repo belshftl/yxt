@@ -895,22 +895,20 @@ fn scan_line_structure(s: &str, ctx: LineCtx, base: usize) -> Result<LineStructu
                     assignment_eq = Some(item.pos);
                 }
             }
-            b'<' if paren_depth == 0 => {
-                if matches_toplv_byte(it.peek(), item.pos + 1, b'=')? {
-                    _ = it.next().transpose()?;
+            b'<' if paren_depth == 0 && matches_toplv_byte(it.peek(), item.pos + 1, b'=')? => {
+                _ = it.next().transpose()?;
 
-                    if mapping_op.replace((item.pos, MappingOp::Left)).is_some() {
-                        return Err(ParseError {
-                            kind: ErrorKind::MultipleMappingOperators,
-                            span: Span {
-                                ctx,
-                                start: base + item.pos,
-                                end: base + item.pos + 2,
-                            },
-                        });
-                    }
-                    continue;
+                if mapping_op.replace((item.pos, MappingOp::Left)).is_some() {
+                    return Err(ParseError {
+                        kind: ErrorKind::MultipleMappingOperators,
+                        span: Span {
+                            ctx,
+                            start: base + item.pos,
+                            end: base + item.pos + 2,
+                        },
+                    });
                 }
+                continue;
             }
             _ => {}
         }

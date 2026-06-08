@@ -335,7 +335,7 @@ impl InheritToken {
         match self {
             Self::Key { key } => match *key {
                 KeyPattern::Named(key) => Token::Key {
-                    key: key,
+                    key,
                     mods: payload.actual_mods,
                     kind: payload.kind,
                 },

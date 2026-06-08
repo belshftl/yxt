@@ -380,10 +380,8 @@ impl ControlScanner {
                     }
                     return;
                 }
-                if b == 0x9c && self.cfg.accept_c1 {
-                    self.out.push(ControlEvent::StringTerminated(*kind));
-                    self.state = ScannerState::Ground;
-                } else if b == 0x07 && kind.allows_bel_termination() {
+                if (b == 0x9c && self.cfg.accept_c1) || (b == 0x07 && kind.allows_bel_termination())
+                {
                     self.out.push(ControlEvent::StringTerminated(*kind));
                     self.state = ScannerState::Ground;
                 } else if b == 0x1b {

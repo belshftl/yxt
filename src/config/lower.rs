@@ -158,25 +158,13 @@ pub struct ConfigError {
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ConfigBuilder {
     options: Options,
     groups: GroupTable,
     mappings: Vec<Mapping>,
     services: Vec<Service>,
     sv_names: HashSet<String>,
-}
-
-impl Default for ConfigBuilder {
-    fn default() -> Self {
-        Self {
-            options: Options::default(),
-            groups: GroupTable::default(),
-            mappings: Vec::new(),
-            services: Vec::new(),
-            sv_names: HashSet::new(),
-        }
-    }
 }
 
 impl ConfigBuilder {
@@ -425,7 +413,7 @@ impl ConfigBuilder {
             kind: ErrorKind::BadEntityArgs { kind: "group" },
             span,
         })?;
-        self.groups.lookup(&name).ok_or_else(|| ConfigError {
+        self.groups.lookup(&name).ok_or(ConfigError {
             kind: ErrorKind::UnknownGroup { name },
             span,
         })

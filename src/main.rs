@@ -280,12 +280,11 @@ try '--help' for more info
     signals.register(libc::SIGTERM)?;
     signals.register(libc::SIGWINCH)?;
     for src in config.mappings.iter().map(|m| &m.from) {
-        if let Source::Event(Event::Signal(Signal(sig))) = src {
-            if let Err(e) = signals.register(*sig)
-                && !matches!(e, SignalError::AlreadyRegistered(_))
-            {
-                return Err(AppError::Signal(e));
-            }
+        if let Source::Event(Event::Signal(Signal(sig))) = src
+            && let Err(e) = signals.register(*sig)
+            && !matches!(e, SignalError::AlreadyRegistered(_))
+        {
+            return Err(AppError::Signal(e));
         }
     }
 
@@ -309,14 +308,14 @@ try '--help' for more info
     ) -> Result<(), AppError> {
         match effect {
             RouteEffect::Token(tok) => {
-                if let Some(bytes) = encoder.encode_token(&tok) {
+                if let Some(bytes) = encoder.encode_token(tok) {
                     master_queue
                         .push(&bytes)
                         .map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?;
                 }
             }
             RouteEffect::Action(act) => match act {
-                Action::Command(cmd) => actions.spawn(&cmd)?,
+                Action::Command(cmd) => actions.spawn(cmd)?,
             },
         }
         Ok(())
@@ -334,7 +333,7 @@ try '--help' for more info
                 Decoded::Token(tok) => {
                     let r = router.fire(RouteInput::Token(tok))?;
                     if !r.matched
-                        && let Some(bytes) = encoder.encode_token(&tok)
+                        && let Some(bytes) = encoder.encode_token(tok)
                     {
                         master_queue
                             .push(&bytes)
@@ -345,7 +344,7 @@ try '--help' for more info
                     }
                 }
                 Decoded::Unknown(bytes) => master_queue
-                    .push(&bytes)
+                    .push(bytes)
                     .map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?,
             }
         }
@@ -436,9 +435,7 @@ try '--help' for more info
 
             read.push((FdKey::Signals, signals.as_fd()));
             // avoid using a terminal mode the real terminal isn't in yet
-            if !stopping
-                && !(mode_dirty && !stdout_queue.is_empty())
-                && master_queue.remaining() > 0
+            if (stdout_queue.is_empty() || !mode_dirty) && master_queue.remaining() > 0 && !stopping
             {
                 read.push((FdKey::Stdin, stdin.as_fd()));
                 read.push((FdKey::Sock, sock.as_fd()));
@@ -599,7 +596,7 @@ try '--help' for more info
 
         // don't fire tokens if we have a pending mode to avoid using a terminal mode the real
         // terminal isn't in yet
-        if !stopping && !(mode_dirty && !stdout_queue.is_empty()) && master_queue.remaining() > 0 {
+        if (stdout_queue.is_empty() || !mode_dirty) && master_queue.remaining() > 0 && !stopping {
             let mut decoded = Vec::new();
             decoder.flush_timed_out(now, &mut decoded);
             handle_decoded(&decoded, &encoder, &router, &mut master_queue, &mut actions)?;

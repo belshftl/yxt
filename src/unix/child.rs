@@ -43,15 +43,9 @@ impl OsCommandSpec {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ChildEnv {
     pub vars: Vec<(OsString, OsString)>,
-}
-
-impl Default for ChildEnv {
-    fn default() -> Self {
-        Self { vars: Vec::new() }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -82,21 +76,11 @@ impl Default for ChildSpawnOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PtyChildSpawnOptions {
     pub env: ChildEnv,
     pub cwd: Option<PathBuf>,
     pub window_size: Option<libc::winsize>,
-}
-
-impl Default for PtyChildSpawnOptions {
-    fn default() -> Self {
-        Self {
-            env: ChildEnv::default(),
-            cwd: None,
-            window_size: None,
-        }
-    }
 }
 
 #[derive(Debug)]

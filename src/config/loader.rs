@@ -357,7 +357,7 @@ fn tab_expand(line: &str, tabw: usize) -> String {
     for ch in line.chars() {
         if ch == '\t' {
             let n = tabw - (col % tabw);
-            out.extend(std::iter::repeat(' ').take(n));
+            out.extend(std::iter::repeat_n(' ', n));
             col += n;
         } else {
             out.push(ch);

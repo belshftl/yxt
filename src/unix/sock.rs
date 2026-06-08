@@ -73,7 +73,7 @@ impl ControlSock {
             })?;
         }
 
-        if let Err(e) = std::fs::remove_file(&path)
+        if let Err(e) = std::fs::remove_file(path)
             && e.kind() != std::io::ErrorKind::NotFound
         {
             return Err(ControlSockError::RemoveStale {
@@ -82,7 +82,7 @@ impl ControlSock {
             });
         }
 
-        let socket = UnixDatagram::bind(&path).map_err(|source| ControlSockError::Bind {
+        let socket = UnixDatagram::bind(path).map_err(|source| ControlSockError::Bind {
             path: path.to_owned(),
             source,
         })?;

@@ -183,7 +183,7 @@ where
 
 fn duration_to_timeval(d: Duration) -> std::io::Result<libc::timeval> {
     let mut sec = d.as_secs();
-    let mut usec = (d.subsec_nanos() + 999) / 1000;
+    let mut usec = d.subsec_nanos().div_ceil(1000);
 
     if usec == 1000000 {
         usec = 0;
