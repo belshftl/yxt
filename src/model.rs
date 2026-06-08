@@ -205,6 +205,7 @@ impl GroupTable {
         self.name_to_id.get(name).copied()
     }
 
+    #[cfg(test)]
     pub fn name(&self, id: GroupId) -> &str {
         &self.id_to_name[id.0]
     }

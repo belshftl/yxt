@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#![allow(dead_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 mod config;
 mod model;

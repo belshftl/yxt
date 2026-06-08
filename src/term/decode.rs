@@ -52,18 +52,16 @@ impl Decoder {
         }
     }
 
-    pub fn config(&self) -> DecoderConfig {
-        self.cfg
-    }
-
     pub fn set_mode(&mut self, mode: TermMode) {
         self.cfg.mode = mode;
     }
 
+    #[cfg(test)]
     pub fn is_idle(&self) -> bool {
         self.buf.is_empty() && self.pending.is_none()
     }
 
+    #[cfg(test)]
     pub fn pending(&self) -> Option<NeedMore> {
         self.pending
     }
@@ -103,10 +101,6 @@ impl Decoder {
 
         self.flush_pending(out);
         self.drain_complete(out);
-    }
-
-    pub fn flush_all_unknown(&mut self, out: &mut Vec<Decoded>) {
-        self.flush_unknown(out);
     }
 
     fn timeout_for(&self, need: NeedMore) -> Duration {
@@ -796,21 +790,6 @@ mod tests {
         d.push(Instant::now(), b"\x1b]12345", &mut out);
 
         assert_eq!(out, vec![Decoded::Unknown(b"\x1b]12345".to_vec())]);
-        assert!(d.is_idle());
-    }
-
-    #[test]
-    fn flush_all_unknown_clears_pending_buffer() {
-        let mut d = Decoder::new(cfg(true));
-        let mut out = Vec::new();
-
-        d.push(Instant::now(), b"\x1b[", &mut out);
-        assert!(out.is_empty());
-        assert_eq!(d.pending(), Some(NeedMore::Csi));
-
-        d.flush_all_unknown(&mut out);
-
-        assert_eq!(out, vec![Decoded::Unknown(b"\x1b[".to_vec())]);
         assert!(d.is_idle());
     }
 }

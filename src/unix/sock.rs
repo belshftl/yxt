@@ -97,10 +97,6 @@ impl ControlSock {
         })
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     pub fn recv(&self) -> Result<Option<Vec<u8>>, ControlSockError> {
         let mut buf = vec![0u8; self.max_datagram_size];
         match self.socket.recv(&mut buf) {
@@ -118,14 +114,6 @@ impl ControlSock {
             }
             Err(e) => Err(ControlSockError::Recv(e)),
         }
-    }
-
-    pub fn drain(&self) -> Result<Vec<Vec<u8>>, ControlSockError> {
-        let mut out = Vec::new();
-        while let Some(data) = self.recv()? {
-            out.push(data);
-        }
-        Ok(out)
     }
 }
 

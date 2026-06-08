@@ -13,10 +13,6 @@ impl Encoder {
         Self { mode }
     }
 
-    pub fn mode(&self) -> TermMode {
-        self.mode
-    }
-
     pub fn set_mode(&mut self, mode: TermMode) {
         self.mode = mode;
     }

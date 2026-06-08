@@ -62,23 +62,6 @@ pub struct SelectFds<'a, K: Copy + Eq> {
     pub write: Vec<(K, BorrowedFd<'a>)>,
 }
 
-impl<'a, K: Copy + Eq> SelectFds<'a, K> {
-    pub fn new() -> Self {
-        Self {
-            read: Vec::new(),
-            write: Vec::new(),
-        }
-    }
-
-    pub fn read(&mut self, key: K, fd: BorrowedFd<'a>) {
-        self.read.push((key, fd));
-    }
-
-    pub fn write(&mut self, key: K, fd: BorrowedFd<'a>) {
-        self.write.push((key, fd));
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct ReadyFds<K: Copy + Eq> {
     pub read: Vec<K>,

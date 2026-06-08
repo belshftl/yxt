@@ -50,10 +50,6 @@ impl SourceMap {
         &self.files[id.0].path
     }
 
-    pub fn text(&self, id: FileId) -> &str {
-        &self.files[id.0].text
-    }
-
     pub fn line(&self, ctx: LineCtx) -> Option<&str> {
         self.files.get(ctx.file.0)?.line(ctx.line)
     }

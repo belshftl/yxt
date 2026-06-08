@@ -318,10 +318,6 @@ impl ControlScanner {
         }
     }
 
-    pub fn config(&self) -> ControlScannerConfig {
-        self.cfg
-    }
-
     pub fn push(&mut self, bytes: &[u8]) -> Vec<ControlEvent> {
         self.out.clear();
         for &b in bytes {
