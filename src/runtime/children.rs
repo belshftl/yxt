@@ -41,9 +41,7 @@ impl ActionManager {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceState {
     Running,
-    Terminating {
-        deadline: std::time::Instant,
-    },
+    Terminating { deadline: std::time::Instant },
     Killed,
     Exited,
 }
@@ -132,40 +130,76 @@ fn signal_child(child: &Child, signal: libc::c_int) -> std::io::Result<()> {
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
     #[error("failed to spawn service '{name}': {source}")]
-    Spawn { name: String, #[source] source: ChildError, cleanup: Vec<ServiceCleanupError> },
+    Spawn {
+        name: String,
+        #[source]
+        source: ChildError,
+        cleanup: Vec<ServiceCleanupError>,
+    },
 
     #[error("service '{name}' exited unexpectedly with status {status}")]
-    UnexpectedExit { name: String, status: std::process::ExitStatus },
+    UnexpectedExit {
+        name: String,
+        status: std::process::ExitStatus,
+    },
 
     #[error("failed to check service '{name}': {source}")]
-    Check { name: String, #[source] source: std::io::Error },
+    Check {
+        name: String,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("failed to terminate service '{name}': {source}")]
-    Terminate { name: String, #[source] source: std::io::Error },
+    Terminate {
+        name: String,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("failed to kill service '{name}': {source}")]
-    Kill { name: String, #[source] source: std::io::Error },
+    Kill {
+        name: String,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceCleanupError {
     #[error("failed to check service '{name}': {source}")]
-    Check { name: String, #[source] source: std::io::Error },
+    Check {
+        name: String,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("failed to terminate service '{name}': {source}")]
-    Terminate { name: String, #[source] source: std::io::Error },
+    Terminate {
+        name: String,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("failed to kill service '{name}': {source}")]
-    Kill { name: String, #[source] source: std::io::Error },
+    Kill {
+        name: String,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl ServiceCleanupError {
     pub fn try_from(err: ServiceError) -> Option<ServiceCleanupError> {
         match err {
-            ServiceError::Check { name, source } => Some(ServiceCleanupError::Check { name, source }),
-            ServiceError::Terminate { name, source } => Some(ServiceCleanupError::Terminate { name, source }),
+            ServiceError::Check { name, source } => {
+                Some(ServiceCleanupError::Check { name, source })
+            }
+            ServiceError::Terminate { name, source } => {
+                Some(ServiceCleanupError::Terminate { name, source })
+            }
             ServiceError::Kill { name, source } => Some(ServiceCleanupError::Kill { name, source }),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -177,17 +211,23 @@ pub struct ServiceManager {
 }
 
 impl ServiceManager {
-    pub fn start(services: &Vec<Service>, spawn_options: ChildSpawnOptions, shutdown_grace: Duration) -> Result<Self, ServiceError> {
+    pub fn start(
+        services: &Vec<Service>,
+        spawn_options: ChildSpawnOptions,
+        shutdown_grace: Duration,
+    ) -> Result<Self, ServiceError> {
         let mut manager = Self {
             services: Vec::new(),
             shutdown_grace,
-            shutting_down: false
+            shutting_down: false,
         };
 
         for sv in services {
             let spec = OsCommandSpec::from_model(&sv.command);
             match spawn(&spec, &spawn_options) {
-                Ok(child) => manager.services.push(ServiceChild::new(sv.name.clone(), child)),
+                Ok(child) => manager
+                    .services
+                    .push(ServiceChild::new(sv.name.clone(), child)),
                 Err(source) => {
                     let now = Instant::now();
                     let mut errors = Vec::new();
@@ -229,7 +269,7 @@ impl ServiceManager {
                     return Err(ServiceError::Spawn {
                         name: sv.name.clone(),
                         source,
-                        cleanup: errors
+                        cleanup: errors,
                     });
                 }
             }
@@ -241,10 +281,12 @@ impl ServiceManager {
     pub fn check_exits(&mut self) -> Result<(), ServiceError> {
         for sv in &mut self.services {
             let name = sv.name().to_owned();
-            if !self.shutting_down && let Some(status) = sv.try_wait().map_err(|source| ServiceError::Check {
-                name: name.clone(),
-                source,
-            })? {
+            if !self.shutting_down
+                && let Some(status) = sv.try_wait().map_err(|source| ServiceError::Check {
+                    name: name.clone(),
+                    source,
+                })?
+            {
                 return Err(ServiceError::UnexpectedExit { name, status });
             }
         }
@@ -260,10 +302,8 @@ impl ServiceManager {
         let deadline = now + self.shutdown_grace;
         for sv in &mut self.services {
             let name = sv.name().to_owned();
-            sv.begin_terminate(deadline).map_err(|source| ServiceError::Terminate {
-                name,
-                source,
-            })?;
+            sv.begin_terminate(deadline)
+                .map_err(|source| ServiceError::Terminate { name, source })?;
         }
         Ok(())
     }
@@ -292,10 +332,13 @@ impl ServiceManager {
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.services.iter().filter_map(|service| match service.state() {
-            ServiceState::Terminating { deadline } => Some(deadline),
-            _ => None,
-        }).min()
+        self.services
+            .iter()
+            .filter_map(|service| match service.state() {
+                ServiceState::Terminating { deadline } => Some(deadline),
+                _ => None,
+            })
+            .min()
     }
 
     pub fn is_shutdown_complete(&self) -> bool {

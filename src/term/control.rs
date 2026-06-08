@@ -131,13 +131,8 @@ impl OwnedCsiSeq {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsiScan<'a> {
     NeedMore,
-    Complete {
-        csi: CsiSeq<'a>,
-        consumed: usize,
-    },
-    Malformed {
-        consumed: usize,
-    },
+    Complete { csi: CsiSeq<'a>, consumed: usize },
+    Malformed { consumed: usize },
 }
 
 pub fn scan_csi(buf: &[u8], accept_c1: bool) -> CsiScan<'_> {
@@ -163,15 +158,11 @@ pub fn scan_csi(buf: &[u8], accept_c1: bool) -> CsiScan<'_> {
     }
 
     if !(0x40..=0x7e).contains(&buf[idx]) {
-        return CsiScan::Malformed {
-            consumed: idx + 1,
-        };
+        return CsiScan::Malformed { consumed: idx + 1 };
     }
     let raw = &buf[prefix_len..=idx];
     let Some(csi) = split_csi_body(raw) else {
-        return CsiScan::Malformed {
-            consumed: idx + 1,
-        };
+        return CsiScan::Malformed { consumed: idx + 1 };
     };
     CsiScan::Complete {
         csi,
@@ -211,12 +202,8 @@ pub fn split_csi_body(raw: &[u8]) -> Option<CsiSeq<'_>> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringScan {
     NeedMore,
-    Complete {
-        consumed: usize,
-    },
-    Malformed {
-        consumed: usize,
-    },
+    Complete { consumed: usize },
+    Malformed { consumed: usize },
 }
 
 pub fn scan_string_control(buf: &[u8], kind: StringControlKind, accept_c1: bool) -> StringScan {
@@ -228,7 +215,9 @@ pub fn scan_string_control(buf: &[u8], kind: StringControlKind, accept_c1: bool)
             Some(ControlPrefix::String(k)) if k == kind => 2,
             _ => return StringScan::Malformed { consumed: 1 },
         }
-    } else if accept_c1 && buf.first().and_then(|b| classify_c1(*b)) == Some(ControlPrefix::String(kind)) {
+    } else if accept_c1
+        && buf.first().and_then(|b| classify_c1(*b)) == Some(ControlPrefix::String(kind))
+    {
         1
     } else {
         return StringScan::Malformed {
@@ -239,9 +228,13 @@ pub fn scan_string_control(buf: &[u8], kind: StringControlKind, accept_c1: bool)
     let mut idx = idx;
     while idx < buf.len() {
         match buf[idx] {
-            0x07 if kind.allows_bel_termination() => return StringScan::Complete { consumed: idx + 1 },
+            0x07 if kind.allows_bel_termination() => {
+                return StringScan::Complete { consumed: idx + 1 };
+            }
             0x9c if accept_c1 => return StringScan::Complete { consumed: idx + 1 },
-            0x1b if buf.get(idx + 1) == Some(&b'\\') => return StringScan::Complete { consumed: idx + 2 },
+            0x1b if buf.get(idx + 1) == Some(&b'\\') => {
+                return StringScan::Complete { consumed: idx + 2 };
+            }
             _ => idx += 1,
         }
     }
@@ -411,9 +404,7 @@ impl ControlScanner {
                 self.state = ScannerState::Ground;
             }
             ControlPrefix::Csi => {
-                self.state = ScannerState::Csi {
-                    bytes: Vec::new(),
-                };
+                self.state = ScannerState::Csi { bytes: Vec::new() };
             }
             ControlPrefix::String(kind) => {
                 self.state = ScannerState::String {
@@ -463,12 +454,27 @@ mod tests {
     fn classify_esc_byte_recognizes_control_prefixes() {
         assert_eq!(classify_esc_byte(b'N'), ControlPrefix::Ss2);
         assert_eq!(classify_esc_byte(b'O'), ControlPrefix::Ss3);
-        assert_eq!(classify_esc_byte(b'P'), ControlPrefix::String(StringControlKind::Dcs));
-        assert_eq!(classify_esc_byte(b'X'), ControlPrefix::String(StringControlKind::Sos));
+        assert_eq!(
+            classify_esc_byte(b'P'),
+            ControlPrefix::String(StringControlKind::Dcs)
+        );
+        assert_eq!(
+            classify_esc_byte(b'X'),
+            ControlPrefix::String(StringControlKind::Sos)
+        );
         assert_eq!(classify_esc_byte(b'['), ControlPrefix::Csi);
-        assert_eq!(classify_esc_byte(b']'), ControlPrefix::String(StringControlKind::Osc));
-        assert_eq!(classify_esc_byte(b'^'), ControlPrefix::String(StringControlKind::Pm));
-        assert_eq!(classify_esc_byte(b'_'), ControlPrefix::String(StringControlKind::Apc));
+        assert_eq!(
+            classify_esc_byte(b']'),
+            ControlPrefix::String(StringControlKind::Osc)
+        );
+        assert_eq!(
+            classify_esc_byte(b'^'),
+            ControlPrefix::String(StringControlKind::Pm)
+        );
+        assert_eq!(
+            classify_esc_byte(b'_'),
+            ControlPrefix::String(StringControlKind::Apc)
+        );
         assert_eq!(classify_esc_byte(b'='), ControlPrefix::Esc(b'='));
         assert_eq!(classify_esc_byte(b'>'), ControlPrefix::Esc(b'>'));
         assert_eq!(classify_esc_byte(b'c'), ControlPrefix::Esc(b'c'));
@@ -479,8 +485,14 @@ mod tests {
         assert_eq!(classify_esc_prefixed(b"\x1bN"), Some(ControlPrefix::Ss2));
         assert_eq!(classify_esc_prefixed(b"\x1bO"), Some(ControlPrefix::Ss3));
         assert_eq!(classify_esc_prefixed(b"\x1b["), Some(ControlPrefix::Csi));
-        assert_eq!(classify_esc_prefixed(b"\x1b]"), Some(ControlPrefix::String(StringControlKind::Osc)));
-        assert_eq!(classify_esc_prefixed(b"\x1b="), Some(ControlPrefix::Esc(b'=')));
+        assert_eq!(
+            classify_esc_prefixed(b"\x1b]"),
+            Some(ControlPrefix::String(StringControlKind::Osc))
+        );
+        assert_eq!(
+            classify_esc_prefixed(b"\x1b="),
+            Some(ControlPrefix::Esc(b'='))
+        );
 
         assert_eq!(classify_esc_prefixed(b""), None);
         assert_eq!(classify_esc_prefixed(b"x"), None);
@@ -491,12 +503,27 @@ mod tests {
     fn classify_c1_recognizes_c1_controls() {
         assert_eq!(classify_c1(0x8e), Some(ControlPrefix::Ss2));
         assert_eq!(classify_c1(0x8f), Some(ControlPrefix::Ss3));
-        assert_eq!(classify_c1(0x90), Some(ControlPrefix::String(StringControlKind::Dcs)));
-        assert_eq!(classify_c1(0x98), Some(ControlPrefix::String(StringControlKind::Sos)));
+        assert_eq!(
+            classify_c1(0x90),
+            Some(ControlPrefix::String(StringControlKind::Dcs))
+        );
+        assert_eq!(
+            classify_c1(0x98),
+            Some(ControlPrefix::String(StringControlKind::Sos))
+        );
         assert_eq!(classify_c1(0x9b), Some(ControlPrefix::Csi));
-        assert_eq!(classify_c1(0x9d), Some(ControlPrefix::String(StringControlKind::Osc)));
-        assert_eq!(classify_c1(0x9e), Some(ControlPrefix::String(StringControlKind::Pm)));
-        assert_eq!(classify_c1(0x9f), Some(ControlPrefix::String(StringControlKind::Apc)));
+        assert_eq!(
+            classify_c1(0x9d),
+            Some(ControlPrefix::String(StringControlKind::Osc))
+        );
+        assert_eq!(
+            classify_c1(0x9e),
+            Some(ControlPrefix::String(StringControlKind::Pm))
+        );
+        assert_eq!(
+            classify_c1(0x9f),
+            Some(ControlPrefix::String(StringControlKind::Apc))
+        );
 
         assert_eq!(classify_c1(0x80), None);
         assert_eq!(classify_c1(0x91), None);
@@ -550,14 +577,20 @@ mod tests {
 
     #[test]
     fn scan_csi_reports_malformed_for_bad_bytes() {
-        assert_eq!(scan_csi(b"\x1b[1\x80", false), CsiScan::Malformed { consumed: 4 });
+        assert_eq!(
+            scan_csi(b"\x1b[1\x80", false),
+            CsiScan::Malformed { consumed: 4 }
+        );
         assert_eq!(scan_csi(b"x", false), CsiScan::Malformed { consumed: 1 });
         assert_eq!(scan_csi(b"", false), CsiScan::Malformed { consumed: 0 });
     }
 
     #[test]
     fn scan_csi_c1_is_config_gated() {
-        assert_eq!(scan_csi(b"\x9b?1h", false), CsiScan::Malformed { consumed: 1 });
+        assert_eq!(
+            scan_csi(b"\x9b?1h", false),
+            CsiScan::Malformed { consumed: 1 }
+        );
 
         let (csi, consumed) = complete_csi(b"\x9b?1h", true);
         assert_eq!(consumed, 4);
@@ -840,9 +873,15 @@ mod tests {
         let mut scanner = ControlScanner::default();
 
         assert_eq!(scanner.push(b"\x1b]0;title"), vec![]);
-        assert_eq!(scanner.push(b"\x07"), vec![ControlEvent::StringTerminated(StringControlKind::Osc)]);
+        assert_eq!(
+            scanner.push(b"\x07"),
+            vec![ControlEvent::StringTerminated(StringControlKind::Osc)]
+        );
         assert_eq!(scanner.push(b"\x1b]0;title"), vec![]);
-        assert_eq!(scanner.push(b"\x1b\\"), vec![ControlEvent::StringTerminated(StringControlKind::Osc)]);
+        assert_eq!(
+            scanner.push(b"\x1b\\"),
+            vec![ControlEvent::StringTerminated(StringControlKind::Osc)]
+        );
     }
 
     #[test]
@@ -850,7 +889,10 @@ mod tests {
         let mut scanner = ControlScanner::default();
 
         assert_eq!(scanner.push(b"\x1bPabc\x07"), vec![]);
-        assert_eq!(scanner.push(b"\x1b\\"), vec![ControlEvent::StringTerminated(StringControlKind::Dcs)]);
+        assert_eq!(
+            scanner.push(b"\x1b\\"),
+            vec![ControlEvent::StringTerminated(StringControlKind::Dcs)]
+        );
     }
 
     #[test]
@@ -864,7 +906,11 @@ mod tests {
 
             assert_eq!(scanner.push(prefix), vec![]);
             assert_eq!(scanner.push(b"payload"), vec![]);
-            assert_eq!(scanner.push(b"\x1b\\"), vec![ControlEvent::StringTerminated(kind)], "kind: {kind:?}");
+            assert_eq!(
+                scanner.push(b"\x1b\\"),
+                vec![ControlEvent::StringTerminated(kind)],
+                "kind: {kind:?}"
+            );
         }
     }
 
@@ -899,7 +945,10 @@ mod tests {
         assert_eq!(scanner.push(b"\x8f"), vec![ControlEvent::Ss3]);
 
         assert_eq!(scanner.push(b"\x9d0;title"), vec![]);
-        assert_eq!(scanner.push(b"\x9c"), vec![ControlEvent::StringTerminated(StringControlKind::Osc)]);
+        assert_eq!(
+            scanner.push(b"\x9c"),
+            vec![ControlEvent::StringTerminated(StringControlKind::Osc)]
+        );
     }
 
     #[test]
@@ -907,13 +956,19 @@ mod tests {
         let mut scanner = ControlScanner::default();
 
         assert_eq!(scanner.push(b"\x1b]title\x9c"), vec![]);
-        assert_eq!(scanner.push(b"\x1b\\"), vec![ControlEvent::StringTerminated(StringControlKind::Osc)]);
+        assert_eq!(
+            scanner.push(b"\x1b\\"),
+            vec![ControlEvent::StringTerminated(StringControlKind::Osc)]
+        );
 
         let mut scanner = ControlScanner::new(ControlScannerConfig {
             accept_c1: true,
             max_csi_bytes: DEFAULT_MAX_CSI_BYTES,
         });
 
-        assert_eq!(scanner.push(b"\x1b]title\x9c"), vec![ControlEvent::StringTerminated(StringControlKind::Osc)]);
+        assert_eq!(
+            scanner.push(b"\x1b]title\x9c"),
+            vec![ControlEvent::StringTerminated(StringControlKind::Osc)]
+        );
     }
 }

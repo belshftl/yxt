@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-use std::path::{Path, PathBuf};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixDatagram;
+use std::path::{Path, PathBuf};
 
 // unix(7):
 // "When coding portable applications, keep in mind that some
@@ -23,13 +23,25 @@ pub enum ControlSockError {
     PathTooLong(PathBuf),
 
     #[error("failed to create socket directory '{path}': {source}")]
-    CreateDir { path: PathBuf, #[source] source: std::io::Error },
+    CreateDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("failed to remove stale socket '{path}': {source}")]
-    RemoveStale { path: PathBuf, #[source] source: std::io::Error },
+    RemoveStale {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("failed to bind socket '{path}': {source}")]
-    Bind { path: PathBuf, #[source] source: std::io::Error },
+    Bind {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("failed to configure socket: {0}")]
     Configure(#[source] std::io::Error),
@@ -55,21 +67,34 @@ impl ControlSock {
         }
 
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| {
-                ControlSockError::CreateDir { path: parent.to_owned(), source }
+            std::fs::create_dir_all(parent).map_err(|source| ControlSockError::CreateDir {
+                path: parent.to_owned(),
+                source,
             })?;
         }
 
-        if let Err(e) = std::fs::remove_file(&path) && e.kind() != std::io::ErrorKind::NotFound {
-            return Err(ControlSockError::RemoveStale { path: path.to_owned(), source: e });
+        if let Err(e) = std::fs::remove_file(&path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(ControlSockError::RemoveStale {
+                path: path.to_owned(),
+                source: e,
+            });
         }
 
-        let socket = UnixDatagram::bind(&path).map_err(|source| {
-            ControlSockError::Bind { path: path.to_owned(), source }
+        let socket = UnixDatagram::bind(&path).map_err(|source| ControlSockError::Bind {
+            path: path.to_owned(),
+            source,
         })?;
-        socket.set_nonblocking(true).map_err(ControlSockError::Configure)?;
+        socket
+            .set_nonblocking(true)
+            .map_err(ControlSockError::Configure)?;
 
-        Ok(Self { path: path.to_owned(), socket, max_datagram_size })
+        Ok(Self {
+            path: path.to_owned(),
+            socket,
+            max_datagram_size,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -83,7 +108,14 @@ impl ControlSock {
                 buf.truncate(n);
                 Ok(Some(buf))
             }
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => Ok(None),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                Ok(None)
+            }
             Err(e) => Err(ControlSockError::Recv(e)),
         }
     }
@@ -117,5 +149,7 @@ impl AsRawFd for ControlSock {
 
 pub fn default_sock_path(prog_name: &str) -> Result<PathBuf, ControlSockError> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or(ControlSockError::NoRuntimeDir)?;
-    Ok(PathBuf::from(dir).join(prog_name).join(format!("{}.sock", std::process::id())))
+    Ok(PathBuf::from(dir)
+        .join(prog_name)
+        .join(format!("{}.sock", std::process::id())))
 }

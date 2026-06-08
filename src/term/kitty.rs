@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-use crate::model::{Key, KeyEventKind, KeypadKey, MediaKey, ModifierKey, Mods, Token};
 use super::control::{CsiSeq, read_u32};
+use crate::model::{Key, KeyEventKind, KeypadKey, MediaKey, ModifierKey, Mods, Token};
 
 pub const FLAG_REPORT_EVENT_TYPES: u8 = 0x02;
 pub const FLAG_REPORT_ALL_KEYS: u8 = 0x08;
@@ -81,12 +81,24 @@ fn parse_mods_and_type(body: &[u8], idx: &mut usize) -> Option<(Mods, KeyEventKi
         }
 
         let mut mods = Mods::EMPTY;
-        if bits & 1 != 0 { mods |= Mods::SHIFT; }
-        if bits & 2 != 0 { mods |= Mods::ALT; }
-        if bits & 4 != 0 { mods |= Mods::CTRL; }
-        if bits & 8 != 0 { mods |= Mods::SUPER; }
-        if bits & 16 != 0 { mods |= Mods::HYPER; }
-        if bits & 32 != 0 { mods |= Mods::META; }
+        if bits & 1 != 0 {
+            mods |= Mods::SHIFT;
+        }
+        if bits & 2 != 0 {
+            mods |= Mods::ALT;
+        }
+        if bits & 4 != 0 {
+            mods |= Mods::CTRL;
+        }
+        if bits & 8 != 0 {
+            mods |= Mods::SUPER;
+        }
+        if bits & 16 != 0 {
+            mods |= Mods::HYPER;
+        }
+        if bits & 32 != 0 {
+            mods |= Mods::META;
+        }
         mods
     } else {
         return None;
@@ -101,7 +113,7 @@ fn parse_mods_and_type(body: &[u8], idx: &mut usize) -> Option<(Mods, KeyEventKi
             1 => KeyEventKind::Press,
             2 => KeyEventKind::Repeat,
             3 => KeyEventKind::Release,
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     } else {
         KeyEventKind::Press
@@ -200,11 +212,20 @@ fn token_from_codepoint(code: u32, mods: Mods, kind: KeyEventKind) -> Token {
         Token::Key { key, mods, kind }
     } else {
         // replace invalid codepoints with U+FFFD REPLACEMENT CHARACTER
-        Token::Utf8 { ch: char::from_u32(code).unwrap_or('\u{fffd}'), mods, kind }
+        Token::Utf8 {
+            ch: char::from_u32(code).unwrap_or('\u{fffd}'),
+            mods,
+            kind,
+        }
     }
 }
 
-fn parse_text_fields(params: &[u8], idx: &mut usize, mods: Mods, kind: KeyEventKind) -> Option<Vec<Token>> {
+fn parse_text_fields(
+    params: &[u8],
+    idx: &mut usize,
+    mods: Mods,
+    kind: KeyEventKind,
+) -> Option<Vec<Token>> {
     let mut out = Vec::new();
     loop {
         skip_ws(params, idx);
@@ -396,7 +417,11 @@ mod tests {
     fn decodes_text_with_modifiers_as_press_when_event_type_omitted() {
         assert_eq!(
             decode_csi_u(csi(b"114;6u")),
-            Some(vec![utf8('r', Mods::SHIFT | Mods::CTRL, KeyEventKind::Press)]),
+            Some(vec![utf8(
+                'r',
+                Mods::SHIFT | Mods::CTRL,
+                KeyEventKind::Press
+            )]),
         );
     }
 
@@ -488,7 +513,11 @@ mod tests {
         );
         assert_eq!(
             decode_csi_u(csi(b"57361u")),
-            Some(vec![key(Key::PrintScreen, Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::PrintScreen,
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
         assert_eq!(
             decode_csi_u(csi(b"57362u")),
@@ -504,11 +533,19 @@ mod tests {
     fn decodes_f13_to_f35() {
         assert_eq!(
             decode_csi_u(csi(b"57376u")),
-            Some(vec![key(Key::Function(13), Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::Function(13),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
         assert_eq!(
             decode_csi_u(csi(b"57398u")),
-            Some(vec![key(Key::Function(35), Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::Function(35),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
     }
 
@@ -516,15 +553,27 @@ mod tests {
     fn decodes_keypad_keys() {
         assert_eq!(
             decode_csi_u(csi(b"57427u")),
-            Some(vec![key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::Keypad(KeypadKey::Begin),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
         assert_eq!(
             decode_csi_u(csi(b"57399u")),
-            Some(vec![key(Key::Keypad(KeypadKey::Left), Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::Keypad(KeypadKey::Left),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
         assert_eq!(
             decode_csi_u(csi(b"57408;5:3u")),
-            Some(vec![key(Key::Keypad(KeypadKey::Delete), Mods::CTRL, KeyEventKind::Release)]),
+            Some(vec![key(
+                Key::Keypad(KeypadKey::Delete),
+                Mods::CTRL,
+                KeyEventKind::Release
+            )]),
         );
     }
 
@@ -532,15 +581,27 @@ mod tests {
     fn decodes_media_keys() {
         assert_eq!(
             decode_csi_u(csi(b"57428u")),
-            Some(vec![key(Key::Media(MediaKey::Play), Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::Media(MediaKey::Play),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
         assert_eq!(
             decode_csi_u(csi(b"57430u")),
-            Some(vec![key(Key::Media(MediaKey::PlayPause), Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::Media(MediaKey::PlayPause),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
         assert_eq!(
             decode_csi_u(csi(b"57440u")),
-            Some(vec![key(Key::Media(MediaKey::MuteVolume), Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::Media(MediaKey::MuteVolume),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
     }
 
@@ -548,19 +609,35 @@ mod tests {
     fn decodes_modifier_keys_and_iso_level_keys() {
         assert_eq!(
             decode_csi_u(csi(b"57441u")),
-            Some(vec![key(Key::ModifierKey(ModifierKey::LeftShift), Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::ModifierKey(ModifierKey::LeftShift),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
         assert_eq!(
             decode_csi_u(csi(b"57452u")),
-            Some(vec![key(Key::ModifierKey(ModifierKey::RightMeta), Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::ModifierKey(ModifierKey::RightMeta),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
         assert_eq!(
             decode_csi_u(csi(b"57453u")),
-            Some(vec![key(Key::IsoLevel3Shift, Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::IsoLevel3Shift,
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
         assert_eq!(
             decode_csi_u(csi(b"57454u")),
-            Some(vec![key(Key::IsoLevel5Shift, Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::IsoLevel5Shift,
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
     }
 
@@ -568,25 +645,34 @@ mod tests {
     fn ignores_caps_lock_and_num_lock_modifier_bits() {
         assert_eq!(
             decode_csi_u(csi(b"57427;65u")), // capslock
-            Some(vec![key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::Keypad(KeypadKey::Begin),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
         assert_eq!(
             decode_csi_u(csi(b"57427;129u")), // numlock
-            Some(vec![key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::Keypad(KeypadKey::Begin),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]),
         );
         assert_eq!(
             decode_csi_u(csi(b"57427;197u")), // ctrl + capslock + numlock
-            Some(vec![key(Key::Keypad(KeypadKey::Begin), Mods::CTRL, KeyEventKind::Press)]),
+            Some(vec![key(
+                Key::Keypad(KeypadKey::Begin),
+                Mods::CTRL,
+                KeyEventKind::Press
+            )]),
         );
     }
 
     #[test]
     fn does_not_encode_when_kitty_disabled() {
         assert_eq!(
-            encode_token(
-                &utf8('r', Mods::CTRL, KeyEventKind::Press),
-                0,
-            ),
+            encode_token(&utf8('r', Mods::CTRL, KeyEventKind::Press), 0,),
             None,
         );
     }
@@ -686,21 +772,33 @@ mod tests {
         );
         assert_eq!(
             encode_token(
-                &key(Key::Keypad(KeypadKey::Begin), Mods::CTRL, KeyEventKind::Press),
+                &key(
+                    Key::Keypad(KeypadKey::Begin),
+                    Mods::CTRL,
+                    KeyEventKind::Press
+                ),
                 FLAG_REPORT_ALL_KEYS,
             ),
             Some(b"\x1b[57427;5u".to_vec()),
         );
         assert_eq!(
             encode_token(
-                &key(Key::Media(MediaKey::PlayPause), Mods::EMPTY, KeyEventKind::Press),
+                &key(
+                    Key::Media(MediaKey::PlayPause),
+                    Mods::EMPTY,
+                    KeyEventKind::Press
+                ),
                 FLAG_REPORT_ALL_KEYS,
             ),
             Some(b"\x1b[57430u".to_vec()),
         );
         assert_eq!(
             encode_token(
-                &key(Key::ModifierKey(ModifierKey::LeftShift), Mods::EMPTY, KeyEventKind::Press),
+                &key(
+                    Key::ModifierKey(ModifierKey::LeftShift),
+                    Mods::EMPTY,
+                    KeyEventKind::Press
+                ),
                 FLAG_REPORT_ALL_KEYS,
             ),
             Some(b"\x1b[57441u".to_vec()),
@@ -711,7 +809,11 @@ mod tests {
     fn encodes_named_kitty_key_release_when_event_type_reporting_enabled() {
         assert_eq!(
             encode_token(
-                &key(Key::Keypad(KeypadKey::Begin), Mods::CTRL, KeyEventKind::Release),
+                &key(
+                    Key::Keypad(KeypadKey::Begin),
+                    Mods::CTRL,
+                    KeyEventKind::Release
+                ),
                 FLAG_REPORT_ALL_KEYS | FLAG_REPORT_EVENT_TYPES,
             ),
             Some(b"\x1b[57427;5:3u".to_vec()),
@@ -722,7 +824,11 @@ mod tests {
     fn does_not_encode_named_kitty_key_release_without_event_type_reporting() {
         assert_eq!(
             encode_token(
-                &key(Key::Keypad(KeypadKey::Begin), Mods::CTRL, KeyEventKind::Release),
+                &key(
+                    Key::Keypad(KeypadKey::Begin),
+                    Mods::CTRL,
+                    KeyEventKind::Release
+                ),
                 FLAG_REPORT_ALL_KEYS,
             ),
             None,

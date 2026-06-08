@@ -18,12 +18,26 @@ pub fn pledge(promises: &str, execpromises: Option<&str>) -> Result<(), PledgeEr
 
     unsafe extern "C" {
         #[link_name = "pledge"]
-        fn libc_pledge(promises: *const libc::c_char, execpromises: *const libc::c_char) -> libc::c_int;
+        fn libc_pledge(
+            promises: *const libc::c_char,
+            execpromises: *const libc::c_char,
+        ) -> libc::c_int;
     }
 
     let promises = CString::new(promises).map_err(|_| PledgeError::InteriorNul)?;
-    let execpromises = execpromises.map(CString::new).transpose().map_err(|_| PledgeError::InteriorNul)?;
-    if unsafe { libc_pledge(promises.as_ptr(), execpromises.as_ref().map_or(std::ptr::null(), |s| s.as_ptr())) } < 0 {
+    let execpromises = execpromises
+        .map(CString::new)
+        .transpose()
+        .map_err(|_| PledgeError::InteriorNul)?;
+    if unsafe {
+        libc_pledge(
+            promises.as_ptr(),
+            execpromises
+                .as_ref()
+                .map_or(std::ptr::null(), |s| s.as_ptr()),
+        )
+    } < 0
+    {
         Err(PledgeError::Io(std::io::Error::last_os_error()))
     } else {
         Ok(())

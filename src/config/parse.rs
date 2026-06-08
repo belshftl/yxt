@@ -7,9 +7,7 @@ use super::ast::*;
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ErrorKind {
     #[error("expected {what}")]
-    Expected {
-        what: &'static str,
-    },
+    Expected { what: &'static str },
 
     #[error("unknown statement")]
     UnknownStatement,
@@ -27,9 +25,7 @@ pub enum ErrorKind {
     CharTooLong,
 
     #[error("invalid escape sequence \\{}", .ch.escape_default())]
-    InvalidEscape {
-        ch: char,
-    },
+    InvalidEscape { ch: char },
 
     #[error("invalid hex escape")]
     InvalidHexEscape,
@@ -84,7 +80,11 @@ pub fn parse_line(line: &str, ctx: LineCtx) -> Result<Option<Stmt>, ParseError> 
             lhs,
             op,
             rhs,
-            span: Span { ctx, start: base, end: base + s.len() },
+            span: Span {
+                ctx,
+                start: base,
+                end: base + s.len(),
+            },
         }))
     } else if let Some(pos) = st.assignment_eq {
         debug_assert!(pos >= base && pos < base + s.len());
@@ -99,12 +99,20 @@ pub fn parse_line(line: &str, ctx: LineCtx) -> Result<Option<Stmt>, ParseError> 
         Ok(Some(Stmt::OptionAssignment {
             name,
             val,
-            span: Span { ctx, start: base, end: base + s.len() },
+            span: Span {
+                ctx,
+                start: base,
+                end: base + s.len(),
+            },
         }))
     } else {
         Err(ParseError {
             kind: ErrorKind::UnknownStatement,
-            span: Span { ctx, start: base, end: base + s.len() },
+            span: Span {
+                ctx,
+                start: base,
+                end: base + s.len(),
+            },
         })
     }
 }
@@ -216,7 +224,11 @@ impl<'a> Cursor<'a> {
         let Some(esc) = self.cons_byte() else {
             return Err(ParseError {
                 kind: unterminated,
-                span: Span { ctx: self.ctx, start: self.base + literal_start, end: self.base + self.pos },
+                span: Span {
+                    ctx: self.ctx,
+                    start: self.base + literal_start,
+                    end: self.base + self.pos,
+                },
             });
         };
 
@@ -233,25 +245,41 @@ impl<'a> Cursor<'a> {
                 let Some(hi_ch) = self.cons_byte() else {
                     return Err(ParseError {
                         kind: ErrorKind::InvalidHexEscape,
-                        span: Span { ctx: self.ctx, start: self.base + escape_pos, end: self.base + self.pos },
+                        span: Span {
+                            ctx: self.ctx,
+                            start: self.base + escape_pos,
+                            end: self.base + self.pos,
+                        },
                     });
                 };
                 let Some(lo_ch) = self.cons_byte() else {
                     return Err(ParseError {
                         kind: ErrorKind::InvalidHexEscape,
-                        span: Span { ctx: self.ctx, start: self.base + escape_pos, end: self.base + self.pos },
+                        span: Span {
+                            ctx: self.ctx,
+                            start: self.base + escape_pos,
+                            end: self.base + self.pos,
+                        },
                     });
                 };
                 let Some(hi) = hex_value(hi_ch) else {
                     return Err(ParseError {
                         kind: ErrorKind::InvalidHexEscape,
-                        span: Span { ctx: self.ctx, start: self.base + start, end: self.base + start + 1 },
+                        span: Span {
+                            ctx: self.ctx,
+                            start: self.base + start,
+                            end: self.base + start + 1,
+                        },
                     });
                 };
                 let Some(lo) = hex_value(lo_ch) else {
                     return Err(ParseError {
                         kind: ErrorKind::InvalidHexEscape,
-                        span: Span { ctx: self.ctx, start: self.base + start + 1, end: self.base + start + 2 },
+                        span: Span {
+                            ctx: self.ctx,
+                            start: self.base + start + 1,
+                            end: self.base + start + 2,
+                        },
                     });
                 };
 
@@ -263,7 +291,11 @@ impl<'a> Cursor<'a> {
                 if self.cons_byte() != Some(b'{') {
                     return Err(ParseError {
                         kind: ErrorKind::InvalidUnicodeEscape,
-                        span: Span { ctx: self.ctx, start: self.base + escape_pos, end: self.base + self.pos },
+                        span: Span {
+                            ctx: self.ctx,
+                            start: self.base + escape_pos,
+                            end: self.base + self.pos,
+                        },
                     });
                 }
 
@@ -275,7 +307,11 @@ impl<'a> Cursor<'a> {
                     let Some(b) = self.cons_byte() else {
                         return Err(ParseError {
                             kind: ErrorKind::InvalidUnicodeEscape,
-                            span: Span { ctx: self.ctx, start: self.base + escape_body_start, end: self.base + self.pos },
+                            span: Span {
+                                ctx: self.ctx,
+                                start: self.base + escape_body_start,
+                                end: self.base + self.pos,
+                            },
                         });
                     };
 
@@ -286,7 +322,11 @@ impl<'a> Cursor<'a> {
                     let Some(v) = hex_value(b) else {
                         return Err(ParseError {
                             kind: ErrorKind::InvalidUnicodeEscape,
-                            span: Span { ctx: self.ctx, start: self.base + self.pos - 1, end: self.base + self.pos },
+                            span: Span {
+                                ctx: self.ctx,
+                                start: self.base + self.pos - 1,
+                                end: self.base + self.pos,
+                            },
                         });
                     };
 
@@ -295,7 +335,11 @@ impl<'a> Cursor<'a> {
                     if digits > 6 {
                         return Err(ParseError {
                             kind: ErrorKind::InvalidUnicodeEscape,
-                            span: Span { ctx: self.ctx, start: self.base + digits_start, end: self.base + self.pos },
+                            span: Span {
+                                ctx: self.ctx,
+                                start: self.base + digits_start,
+                                end: self.base + self.pos,
+                            },
                         });
                     }
 
@@ -305,18 +349,30 @@ impl<'a> Cursor<'a> {
                 if digits == 0 {
                     return Err(ParseError {
                         kind: ErrorKind::InvalidUnicodeEscape,
-                        span: Span { ctx: self.ctx, start: self.base + digits_start, end: self.base + self.pos },
+                        span: Span {
+                            ctx: self.ctx,
+                            start: self.base + digits_start,
+                            end: self.base + self.pos,
+                        },
                     });
                 }
 
                 char::from_u32(value).ok_or_else(|| ParseError {
                     kind: ErrorKind::InvalidUnicodeEscape,
-                    span: Span { ctx: self.ctx, start: self.base + escape_body_start, end: self.base + self.pos },
+                    span: Span {
+                        ctx: self.ctx,
+                        start: self.base + escape_body_start,
+                        end: self.base + self.pos,
+                    },
                 })
             }
             _ => Err(ParseError {
                 kind: ErrorKind::InvalidEscape { ch: esc as char },
-                span: Span { ctx: self.ctx, start: self.base + escape_pos, end: self.base + escape_pos + 1 },
+                span: Span {
+                    ctx: self.ctx,
+                    start: self.base + escape_pos,
+                    end: self.base + escape_pos + 1,
+                },
             }),
         }
     }
@@ -377,7 +433,11 @@ impl<'a> Cursor<'a> {
             None => {
                 return Err(ParseError {
                     kind: ErrorKind::UnterminatedChar,
-                    span: Span { ctx: self.ctx, start: self.base + quote_start, end: self.base + self.pos },
+                    span: Span {
+                        ctx: self.ctx,
+                        start: self.base + quote_start,
+                        end: self.base + self.pos,
+                    },
                 });
             }
             Some(b'\'') => {
@@ -393,7 +453,11 @@ impl<'a> Cursor<'a> {
             Some(b'\\') => {
                 self.pos += 1;
                 let esc_pos = self.pos;
-                self.parse_escape_after_backslash(esc_pos, quote_start, ErrorKind::UnterminatedChar)?
+                self.parse_escape_after_backslash(
+                    esc_pos,
+                    quote_start,
+                    ErrorKind::UnterminatedChar,
+                )?
             }
             Some(_) => {
                 let Some(ch) = self.remaining().chars().next() else {
@@ -411,11 +475,19 @@ impl<'a> Cursor<'a> {
             }
             Some(_) => Err(ParseError {
                 kind: ErrorKind::CharTooLong,
-                span: Span { ctx: self.ctx, start: self.base + quote_start, end: self.base + self.pos },
+                span: Span {
+                    ctx: self.ctx,
+                    start: self.base + quote_start,
+                    end: self.base + self.pos,
+                },
             }),
             None => Err(ParseError {
                 kind: ErrorKind::UnterminatedChar,
-                span: Span { ctx: self.ctx, start: self.base + quote_start, end: self.base + self.pos },
+                span: Span {
+                    ctx: self.ctx,
+                    start: self.base + quote_start,
+                    end: self.base + self.pos,
+                },
             }),
         }
     }
@@ -523,7 +595,9 @@ impl<'a> Cursor<'a> {
 
         // 'x'~
         let b = self.peek_byte();
-        if b.is_none() || (matches!(b.unwrap(), b',' | b')' | b'&' | b'|') || is_ascii_ws(b.unwrap())) {
+        if b.is_none()
+            || (matches!(b.unwrap(), b',' | b')' | b'&' | b'|') || is_ascii_ws(b.unwrap()))
+        {
             let sp = lhs.span();
             return Ok(Expr::InferPair {
                 known: Box::new(lhs),
@@ -577,7 +651,11 @@ impl<'a> Cursor<'a> {
                 self.skip_ws();
                 if self.peek_byte() == Some(b'(') {
                     let args = self.parse_call_args_after_open_paren()?;
-                    return Ok(Expr::Call { name, args, span: self.span_from(start) });
+                    return Ok(Expr::Call {
+                        name,
+                        args,
+                        span: self.span_from(start),
+                    });
                 }
                 self.pos = after_ident;
 
@@ -746,10 +824,7 @@ impl<'a> Iterator for TopLevelBytes<'a> {
                     _ => {
                         let pos = self.pos;
                         self.pos += 1;
-                        return Some(Ok(TopLevelByte {
-                            pos,
-                            byte: b,
-                        }));
+                        return Some(Ok(TopLevelByte { pos, byte: b }));
                     }
                 }
             }
@@ -807,7 +882,11 @@ fn scan_line_structure(s: &str, ctx: LineCtx, base: usize) -> Result<LineStructu
                     if mapping_op.replace((item.pos, MappingOp::Right)).is_some() {
                         return Err(ParseError {
                             kind: ErrorKind::MultipleMappingOperators,
-                            span: Span { ctx, start: base + item.pos, end: base + item.pos + 2 },
+                            span: Span {
+                                ctx,
+                                start: base + item.pos,
+                                end: base + item.pos + 2,
+                            },
                         });
                     }
                     continue;
@@ -823,7 +902,11 @@ fn scan_line_structure(s: &str, ctx: LineCtx, base: usize) -> Result<LineStructu
                     if mapping_op.replace((item.pos, MappingOp::Left)).is_some() {
                         return Err(ParseError {
                             kind: ErrorKind::MultipleMappingOperators,
-                            span: Span { ctx, start: base + item.pos, end: base + item.pos + 2 },
+                            span: Span {
+                                ctx,
+                                start: base + item.pos,
+                                end: base + item.pos + 2,
+                            },
                         });
                     }
                     continue;
@@ -833,7 +916,11 @@ fn scan_line_structure(s: &str, ctx: LineCtx, base: usize) -> Result<LineStructu
         }
     }
 
-    Ok(LineStructure { content_end, mapping_op, assignment_eq })
+    Ok(LineStructure {
+        content_end,
+        mapping_op,
+        assignment_eq,
+    })
 }
 
 fn parse_directive(s: &str, ctx: LineCtx, base: usize) -> Result<Stmt, ParseError> {
@@ -849,7 +936,11 @@ fn parse_directive(s: &str, ctx: LineCtx, base: usize) -> Result<Stmt, ParseErro
     Ok(Stmt::Directive {
         name: name.to_owned(),
         args,
-        span: Span { ctx, start: base, end: base + s.len() },
+        span: Span {
+            ctx,
+            start: base,
+            end: base + s.len(),
+        },
     })
 }
 
@@ -871,7 +962,11 @@ fn parse_definition(s: &str, ctx: LineCtx, base: usize) -> Result<Stmt, ParseErr
     Ok(Stmt::Definition {
         kind: kind.to_owned(),
         args,
-        span: Span { ctx, start: base, end: base + s.len() },
+        span: Span {
+            ctx,
+            start: base,
+            end: base + s.len(),
+        },
     })
 }
 
@@ -1010,7 +1105,15 @@ fn parse_literal_full(s: &str, ctx: LineCtx, base: usize) -> Result<Literal, Par
         return Ok(Literal::Bool(false));
     }
 
-    parse_i32(s, Span { ctx, start: base, end: base + s.len() }).map(Literal::Int)
+    parse_i32(
+        s,
+        Span {
+            ctx,
+            start: base,
+            end: base + s.len(),
+        },
+    )
+    .map(Literal::Int)
 }
 
 fn parse_ident_full(s: &str, ctx: LineCtx, base: usize) -> Result<String, ParseError> {
@@ -1045,12 +1148,19 @@ fn parse_i32(s: &str, span: Span) -> Result<i32, ParseError> {
     };
 
     if s.is_empty() {
-        return Err(ParseError { kind: ErrorKind::InvalidInteger, span });
+        return Err(ParseError {
+            kind: ErrorKind::InvalidInteger,
+            span,
+        });
     }
 
-    let (digits, radix) = if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+    let (digits, radix) = if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))
+    {
         if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(ParseError { kind: ErrorKind::InvalidInteger, span });
+            return Err(ParseError {
+                kind: ErrorKind::InvalidInteger,
+                span,
+            });
         }
         (rest, 16)
     } else if s == "0" {
@@ -1060,13 +1170,19 @@ fn parse_i32(s: &str, span: Span) -> Result<i32, ParseError> {
             ("0", 10)
         } else {
             if rest.as_bytes()[0] == b'0' || !rest.bytes().all(|b| matches!(b, b'0'..=b'7')) {
-                return Err(ParseError { kind: ErrorKind::InvalidInteger, span });
+                return Err(ParseError {
+                    kind: ErrorKind::InvalidInteger,
+                    span,
+                });
             }
             (s, 8)
         }
     } else {
         if s.as_bytes()[0] == b'0' || !s.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(ParseError { kind: ErrorKind::InvalidInteger, span });
+            return Err(ParseError {
+                kind: ErrorKind::InvalidInteger,
+                span,
+            });
         }
         (s, 10)
     };
@@ -1078,7 +1194,10 @@ fn parse_i32(s: &str, span: Span) -> Result<i32, ParseError> {
 
     let v = if negative { -mag } else { mag };
     if v < i32::MIN as i64 || v > i32::MAX as i64 {
-        return Err(ParseError { kind: ErrorKind::IntegerOutOfRange, span });
+        return Err(ParseError {
+            kind: ErrorKind::IntegerOutOfRange,
+            span,
+        });
     }
     Ok(v as i32)
 }
@@ -1088,7 +1207,11 @@ fn strip_line_ending(s: &str, ctx: LineCtx) -> Result<&str, ParseError> {
         if pos + 1 != s.len() {
             return Err(ParseError {
                 kind: ErrorKind::TrailingInput,
-                span: Span { ctx, start: pos + 1, end: s.len() },
+                span: Span {
+                    ctx,
+                    start: pos + 1,
+                    end: s.len(),
+                },
             });
         }
 
@@ -1175,7 +1298,13 @@ mod tests {
 
     fn mapping(src: &str, ctx: LineCtx) -> (Vec<MappingAttr>, Expr, MappingOp, Expr) {
         match parse_line(src, ctx).unwrap() {
-            Some(Stmt::Mapping { attrs, lhs, op, rhs, .. }) => (attrs, lhs, op, rhs),
+            Some(Stmt::Mapping {
+                attrs,
+                lhs,
+                op,
+                rhs,
+                ..
+            }) => (attrs, lhs, op, rhs),
             other => panic!("expected mapping, got {other:?}"),
         }
     }
@@ -1217,7 +1346,9 @@ mod tests {
 
     fn pair(expr: &Expr) -> (char, char) {
         match unparen(expr) {
-            Expr::Pair { unshifted, shifted, .. } => {
+            Expr::Pair {
+                unshifted, shifted, ..
+            } => {
                 let Literal::Char(a) = lit(unshifted) else {
                     panic!("expected char literal on pair lhs, got {unshifted:?}");
                 };
@@ -1233,7 +1364,11 @@ mod tests {
     fn infer_pair(expr: &Expr) -> (PairSide, char) {
         match unparen(expr) {
             Expr::InferPair { known, side, .. } => {
-                let Expr::Literal { value: Literal::Char(ch), .. } = &**known else {
+                let Expr::Literal {
+                    value: Literal::Char(ch),
+                    ..
+                } = &**known
+                else {
                     panic!("expected char literal in infer pair, got {known:?}");
                 };
                 (*side, *ch)
@@ -1254,7 +1389,10 @@ mod tests {
         assert!(matches!(parse_line("", DUMMY_CTX).unwrap(), None));
         assert!(matches!(parse_line("   \t  ", DUMMY_CTX).unwrap(), None));
         assert!(matches!(parse_line("# comment", DUMMY_CTX).unwrap(), None));
-        assert!(matches!(parse_line("   # comment", DUMMY_CTX).unwrap(), None));
+        assert!(matches!(
+            parse_line("   # comment", DUMMY_CTX).unwrap(),
+            None
+        ));
     }
 
     #[test]
@@ -1463,16 +1601,16 @@ mod tests {
         let (attrs, lhs, op, rhs) = mapping(r#"group("a=>b") => send_utf8('=')"#, DUMMY_CTX);
         assert!(attrs.is_empty());
         assert_eq!(op, MappingOp::Right);
-        assert_eq!(lit(&call_args(&lhs)[0]), &Literal::String("a=>b".to_owned()));
+        assert_eq!(
+            lit(&call_args(&lhs)[0]),
+            &Literal::String("a=>b".to_owned())
+        );
         assert_eq!(lit(&call_args(&rhs)[0]), &Literal::Char('='));
     }
 
     #[test]
     fn mapping_operator_inside_call_args_doesnt_count() {
-        let (attrs, lhs, op, rhs) = mapping(
-            r#"outer(inner("=>")) => send_utf8('x')"#,
-            DUMMY_CTX,
-        );
+        let (attrs, lhs, op, rhs) = mapping(r#"outer(inner("=>")) => send_utf8('x')"#, DUMMY_CTX);
 
         assert!(attrs.is_empty());
         assert_eq!(op, MappingOp::Right);
@@ -1632,7 +1770,10 @@ mod tests {
 
     #[test]
     fn parses_infix_with_paren() {
-        let (_, lhs, _, _) = mapping("key(f1, shift & (ctrl || super)) => send_key('x')", DUMMY_CTX);
+        let (_, lhs, _, _) = mapping(
+            "key(f1, shift & (ctrl || super)) => send_key('x')",
+            DUMMY_CTX,
+        );
 
         let args = call_args(&lhs);
         let (op, lhs, rhs) = infix(&args[1]);
@@ -1707,10 +1848,7 @@ mod tests {
 
     #[test]
     fn mapping_attrs_may_touch_lhs_without_ws() {
-        let (attrs, lhs, op, rhs) = mapping(
-            r#"passthrough!key(space) => sh("x")"#,
-            DUMMY_CTX,
-        );
+        let (attrs, lhs, op, rhs) = mapping(r#"passthrough!key(space) => sh("x")"#, DUMMY_CTX);
 
         assert_eq!(op, MappingOp::Right);
         assert_eq!(attrs.len(), 1);

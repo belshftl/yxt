@@ -109,10 +109,7 @@ pub enum ReadResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadToQueueResult {
-    Success {
-        offset: usize,
-        len: usize,
-    },
+    Success { offset: usize, len: usize },
     WouldBlock,
     Eof,
     NoSpace,
@@ -155,7 +152,10 @@ pub fn read<F: AsRawFd + ?Sized>(fd: &F, buf: &mut [u8]) -> std::io::Result<Read
     }
 }
 
-pub fn read_to_queue<F: AsRawFd + ?Sized>(fd: &F, q: &mut ByteQueue) -> std::io::Result<ReadToQueueResult> {
+pub fn read_to_queue<F: AsRawFd + ?Sized>(
+    fd: &F,
+    q: &mut ByteQueue,
+) -> std::io::Result<ReadToQueueResult> {
     if q.remaining() == 0 {
         return Ok(ReadToQueueResult::NoSpace);
     }
@@ -186,14 +186,20 @@ pub fn read_to_queue<F: AsRawFd + ?Sized>(fd: &F, q: &mut ByteQueue) -> std::io:
     }
 }
 
-pub fn read_pty_to_queue<F: AsRawFd + ?Sized>(fd: &F, q: &mut ByteQueue) -> std::io::Result<ReadToQueueResult> {
+pub fn read_pty_to_queue<F: AsRawFd + ?Sized>(
+    fd: &F,
+    q: &mut ByteQueue,
+) -> std::io::Result<ReadToQueueResult> {
     match read_to_queue(fd, q) {
         Err(e) if is_pty_hangup(&e) => Ok(ReadToQueueResult::Eof),
         other => other,
     }
 }
 
-pub fn drain_from_queue<F: AsRawFd + ?Sized>(fd: &F, q: &mut ByteQueue) -> std::io::Result<WriteResult> {
+pub fn drain_from_queue<F: AsRawFd + ?Sized>(
+    fd: &F,
+    q: &mut ByteQueue,
+) -> std::io::Result<WriteResult> {
     if q.is_empty() {
         return Ok(WriteResult::EmptyInput);
     }
@@ -219,7 +225,10 @@ pub fn drain_from_queue<F: AsRawFd + ?Sized>(fd: &F, q: &mut ByteQueue) -> std::
     }
 }
 
-pub fn drain_to_pty_from_queue<F: AsRawFd + ?Sized>(fd: &F, q: &mut ByteQueue) -> std::io::Result<WriteToPtyResult> {
+pub fn drain_to_pty_from_queue<F: AsRawFd + ?Sized>(
+    fd: &F,
+    q: &mut ByteQueue,
+) -> std::io::Result<WriteToPtyResult> {
     match drain_from_queue(fd, q) {
         Err(e) if is_pty_hangup(&e) => Ok(WriteToPtyResult::Hangup),
         other => other.map(|r| match r {
@@ -231,5 +240,6 @@ pub fn drain_to_pty_from_queue<F: AsRawFd + ?Sized>(fd: &F, q: &mut ByteQueue) -
 }
 
 fn is_pty_hangup(e: &std::io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(libc::EIO) | Some(libc::EPIPE)) || e.kind() == std::io::ErrorKind::WriteZero
+    matches!(e.raw_os_error(), Some(libc::EIO) | Some(libc::EPIPE))
+        || e.kind() == std::io::ErrorKind::WriteZero
 }

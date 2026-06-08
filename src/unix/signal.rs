@@ -37,7 +37,11 @@ impl SignalRegistry {
         let (read, write) = UnixStream::pair()?;
         read.set_nonblocking(true)?;
         write.set_nonblocking(true)?;
-        Ok(Self { read, write, entries: Vec::new() })
+        Ok(Self {
+            read,
+            write,
+            entries: Vec::new(),
+        })
     }
 
     pub fn register(&mut self, sig: libc::c_int) -> Result<(), SignalError> {
@@ -58,9 +62,14 @@ impl SignalRegistry {
             signal_hook::low_level::register(sig, move || {
                 handler_pending.store(true, Ordering::Relaxed);
                 let byte = 0u8;
-                _ = libc::write(write_raw_fd, &byte as *const _ as *const _, core::mem::size_of_val(&byte));
+                _ = libc::write(
+                    write_raw_fd,
+                    &byte as *const _ as *const _,
+                    core::mem::size_of_val(&byte),
+                );
             })
-        }.map_err(SignalError::Io)?;
+        }
+        .map_err(SignalError::Io)?;
 
         self.entries.push(SignalEntry { sig, pending, id });
         Ok(())

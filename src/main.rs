@@ -18,8 +18,8 @@ use crate::model::{Action, Event, Signal, Source};
 use crate::runtime::children::{ActionManager, ServiceManager};
 use crate::runtime::cli::{Cli, config_path};
 use crate::runtime::io::{
-    ByteQueue, ReadResult, ReadToQueueResult, WriteResult, WriteToPtyResult,
-    read, read_pty_to_queue, drain_from_queue, drain_to_pty_from_queue,
+    ByteQueue, ReadResult, ReadToQueueResult, WriteResult, WriteToPtyResult, drain_from_queue,
+    drain_to_pty_from_queue, read, read_pty_to_queue,
 };
 use crate::runtime::router::{RouteEffect, RouteInput, Router};
 use crate::term::decode::{Decoded, Decoder, DecoderConfig};
@@ -37,25 +37,62 @@ use crate::unix::tty::{RawTerminal, get_winsize, set_winsize};
 
 const SENSITIVE_CHILD_BASENAMES: &[&str] = &[
     // privilege/auth
-    "sudo", "su", "doas", "pkexec", "login", "newgrp", "sg",
-
+    "sudo",
+    "su",
+    "doas",
+    "pkexec",
+    "login",
+    "newgrp",
+    "sg",
     // user/password
-    "passwd", "chpasswd", "chsh", "chfn", "vipw", "vigr", "kpasswd", "htpasswd",
-
+    "passwd",
+    "chpasswd",
+    "chsh",
+    "chfn",
+    "vipw",
+    "vigr",
+    "kpasswd",
+    "htpasswd",
     // crypto/sign
-    "gpg", "gpg2", "gpg-agent", "pinentry", "pinentry-curses", "pinentry-tty",
-    "pinentry-gnome3", "pinentry-gtk-2", "pinentry-qt", "pinentry-mac",
-    "ssh-keygen", "openssl", "age", "rage", "sq", "sequoia-sq",
-
+    "gpg",
+    "gpg2",
+    "gpg-agent",
+    "pinentry",
+    "pinentry-curses",
+    "pinentry-tty",
+    "pinentry-gnome3",
+    "pinentry-gtk-2",
+    "pinentry-qt",
+    "pinentry-mac",
+    "ssh-keygen",
+    "openssl",
+    "age",
+    "rage",
+    "sq",
+    "sequoia-sq",
     // password/secret manager
-    "pass", "op", "bw", "rbw", "keepassxc-cli", "secret-tool", "security",
-    "ykman", "ykchalresp",
-
+    "pass",
+    "op",
+    "bw",
+    "rbw",
+    "keepassxc-cli",
+    "secret-tool",
+    "security",
+    "ykman",
+    "ykchalresp",
     // remote sessions
-    "ssh", "sftp", "scp", "mosh", "telnet", "rlogin", "rsh", "ftp", "lftp",
-
+    "ssh",
+    "sftp",
+    "scp",
+    "mosh",
+    "telnet",
+    "rlogin",
+    "rsh",
+    "ftp",
+    "lftp",
     // unlock/admin shells
-    "cryptsetup", "zfs",
+    "cryptsetup",
+    "zfs",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -75,10 +112,12 @@ pub enum AppError {
     #[error(transparent)]
     ConfigLoad(#[from] crate::config::loader::ConfigLoadError),
 
-    #[error("\
+    #[error(
+        "\
 refusing to run for sensitive child '{0}'
 this program internally tracks/routes terminal input, which you probably don't want here
-run with --allow-sensitive-child to run anyways")]
+run with --allow-sensitive-child to run anyways"
+    )]
     SensitiveChild(String),
 
     #[error(transparent)]
@@ -99,7 +138,9 @@ run with --allow-sensitive-child to run anyways")]
     #[error(transparent)]
     Route(#[from] crate::runtime::router::RouteError),
 
-    #[error("PTY input queue of {0} bytes is full; child is not consuming its input or mapping expanded too much, bailing out")]
+    #[error(
+        "PTY input queue of {0} bytes is full; child is not consuming its input or mapping expanded too much, bailing out"
+    )]
     MasterQueueFull(usize),
 }
 
@@ -109,13 +150,16 @@ enum FdKey {
     Sock,
     PtyMaster,
     Signals,
-    Stdout
+    Stdout,
 }
 
 fn main() {
     // use a tmp var because otherwise it's `temporary value dropped while borrowed`
     let a0_binding = std::env::args_os().next();
-    let argv0 = a0_binding.as_deref().map(OsStr::to_string_lossy).unwrap_or(Cow::Borrowed("yxt"));
+    let argv0 = a0_binding
+        .as_deref()
+        .map(OsStr::to_string_lossy)
+        .unwrap_or(Cow::Borrowed("yxt"));
     match run(argv0.as_ref()) {
         Ok(rv) => std::process::exit(rv),
         Err(e) => {
@@ -151,10 +195,12 @@ options:
         return Ok(0);
     }
     if !cli.check_config && !cli.dump_config && cli.command.is_empty() {
-        eprint!("\
+        eprint!(
+            "\
 usage: {argv0} [options] command [args ...]
 try '--help' for more info
-");
+"
+        );
         return Ok(2);
     }
 
@@ -177,8 +223,10 @@ try '--help' for more info
         return Ok(0);
     }
 
-    if !cli.allow_sensitive_child &&
-        let Some(child_name) = cli.command[0].to_str() && SENSITIVE_CHILD_BASENAMES.contains(&child_name) {
+    if !cli.allow_sensitive_child
+        && let Some(child_name) = cli.command[0].to_str()
+        && SENSITIVE_CHILD_BASENAMES.contains(&child_name)
+    {
         return Err(AppError::SensitiveChild(child_name.to_owned()));
     }
 
@@ -190,7 +238,10 @@ try '--help' for more info
     const SHUTDOWN_GRACE: Duration = Duration::from_millis(300);
     let env = ChildEnv {
         vars: vec![
-            (OsString::from("YXT_PID"), OsString::from(std::process::id().to_string())),
+            (
+                OsString::from("YXT_PID"),
+                OsString::from(std::process::id().to_string()),
+            ),
             (OsString::from("YXT_SOCK"), sock_path.as_os_str().to_owned()),
         ],
     };
@@ -209,11 +260,14 @@ try '--help' for more info
     let winsize = get_winsize(&stdin).ok();
 
     let child_spec = OsCommandSpec::Exec { argv: cli.command };
-    let mut pty_child = spawn_pty_attached(&child_spec, &PtyChildSpawnOptions {
-        env: env.clone(),
-        cwd: None,
-        window_size: winsize,
-    })?;
+    let mut pty_child = spawn_pty_attached(
+        &child_spec,
+        &PtyChildSpawnOptions {
+            env: env.clone(),
+            cwd: None,
+            window_size: winsize,
+        },
+    )?;
 
     let _raw = RawTerminal::enter(&stdin)?;
     let _sock_nonblock = NonblockingFd::new(sock.as_fd())?;
@@ -227,7 +281,9 @@ try '--help' for more info
     signals.register(libc::SIGWINCH)?;
     for src in config.mappings.iter().map(|m| &m.from) {
         if let Source::Event(Event::Signal(Signal(sig))) = src {
-            if let Err(e) = signals.register(*sig) && !matches!(e, SignalError::AlreadyRegistered(_)) {
+            if let Err(e) = signals.register(*sig)
+                && !matches!(e, SignalError::AlreadyRegistered(_))
+            {
                 return Err(AppError::Signal(e));
             }
         }
@@ -254,14 +310,14 @@ try '--help' for more info
         match effect {
             RouteEffect::Token(tok) => {
                 if let Some(bytes) = encoder.encode_token(&tok) {
-                    master_queue.push(&bytes).map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?;
+                    master_queue
+                        .push(&bytes)
+                        .map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?;
                 }
             }
-            RouteEffect::Action(act) => {
-                match act {
-                    Action::Command(cmd) => actions.spawn(&cmd)?,
-                }
-            }
+            RouteEffect::Action(act) => match act {
+                Action::Command(cmd) => actions.spawn(&cmd)?,
+            },
         }
         Ok(())
     }
@@ -277,15 +333,20 @@ try '--help' for more info
             match item {
                 Decoded::Token(tok) => {
                     let r = router.fire(RouteInput::Token(tok))?;
-                    if !r.matched && let Some(bytes) = encoder.encode_token(&tok) {
-                        master_queue.push(&bytes).map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?;
+                    if !r.matched
+                        && let Some(bytes) = encoder.encode_token(&tok)
+                    {
+                        master_queue
+                            .push(&bytes)
+                            .map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?;
                     }
                     for effect in r.effects {
                         apply_effect(&effect, encoder, master_queue, actions)?;
                     }
                 }
-                Decoded::Unknown(bytes) =>
-                    master_queue.push(&bytes).map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?,
+                Decoded::Unknown(bytes) => master_queue
+                    .push(&bytes)
+                    .map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?,
             }
         }
         Ok(())
@@ -323,7 +384,14 @@ try '--help' for more info
         let now = Instant::now();
 
         if !child_down_or_forgotten && pty_child.child.try_wait()?.is_some() {
-            begin_shutdown(&mut stopping, &mut services, &pty_child, None, &mut child_kill_deadline, now)?;
+            begin_shutdown(
+                &mut stopping,
+                &mut services,
+                &pty_child,
+                None,
+                &mut child_kill_deadline,
+                now,
+            )?;
             child_down_or_forgotten = true;
         }
         if !stopping {
@@ -339,7 +407,10 @@ try '--help' for more info
                 }
             }
 
-            if !child_down_or_forgotten && let Some(d) = child_kill_deadline && now >= d {
+            if !child_down_or_forgotten
+                && let Some(d) = child_kill_deadline
+                && now >= d
+            {
                 pty_child.child.kill()?;
                 child_down_or_forgotten = true;
             }
@@ -349,8 +420,15 @@ try '--help' for more info
             }
         }
 
-        let timeout = [decoder.next_deadline(), services.next_deadline(), child_kill_deadline].
-            into_iter().flatten().min().map(|d| d.saturating_duration_since(now));
+        let timeout = [
+            decoder.next_deadline(),
+            services.next_deadline(),
+            child_kill_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .map(|d| d.saturating_duration_since(now));
 
         let ready = {
             let mut read = Vec::new();
@@ -358,7 +436,10 @@ try '--help' for more info
 
             read.push((FdKey::Signals, signals.as_fd()));
             // avoid using a terminal mode the real terminal isn't in yet
-            if !stopping && !(mode_dirty && !stdout_queue.is_empty()) && master_queue.remaining() > 0 {
+            if !stopping
+                && !(mode_dirty && !stdout_queue.is_empty())
+                && master_queue.remaining() > 0
+            {
                 read.push((FdKey::Stdin, stdin.as_fd()));
                 read.push((FdKey::Sock, sock.as_fd()));
             }
@@ -383,7 +464,10 @@ try '--help' for more info
         let now = Instant::now();
 
         if ready.writable(FdKey::Stdout) {
-            while matches!(drain_from_queue(&stdout, &mut stdout_queue)?, WriteResult::Success(_)) {}
+            while matches!(
+                drain_from_queue(&stdout, &mut stdout_queue)?,
+                WriteResult::Success(_)
+            ) {}
             if stdout_queue.is_empty() {
                 mode_dirty = false;
             }
@@ -396,7 +480,14 @@ try '--help' for more info
                     WriteToPtyResult::WouldBlock | WriteToPtyResult::EmptyInput => break,
                     WriteToPtyResult::Hangup => {
                         // child hung up, don't bother shutting it down, just quit
-                        begin_shutdown(&mut stopping, &mut services, &pty_child, None, &mut child_kill_deadline, now)?;
+                        begin_shutdown(
+                            &mut stopping,
+                            &mut services,
+                            &pty_child,
+                            None,
+                            &mut child_kill_deadline,
+                            now,
+                        )?;
                         child_down_or_forgotten = true;
                         continue 'mainloop;
                     }
@@ -416,7 +507,14 @@ try '--help' for more info
                 }
                 ReadToQueueResult::Eof => {
                     // child hung up, don't bother shutting it down, just quit
-                    begin_shutdown(&mut stopping, &mut services, &pty_child, None, &mut child_kill_deadline, now)?;
+                    begin_shutdown(
+                        &mut stopping,
+                        &mut services,
+                        &pty_child,
+                        None,
+                        &mut child_kill_deadline,
+                        now,
+                    )?;
                     child_down_or_forgotten = true;
                     continue 'mainloop;
                 }
@@ -429,13 +527,21 @@ try '--help' for more info
                 match sig {
                     libc::SIGINT | libc::SIGTERM => {
                         // propagate signal to child and quit
-                        begin_shutdown(&mut stopping, &mut services, &pty_child, Some(sig), &mut child_kill_deadline, now)?;
+                        begin_shutdown(
+                            &mut stopping,
+                            &mut services,
+                            &pty_child,
+                            Some(sig),
+                            &mut child_kill_deadline,
+                            now,
+                        )?;
                         continue 'mainloop;
                     }
                     libc::SIGWINCH => {
                         let ws = get_winsize(&stdin)?;
                         set_winsize(&pty_child.pty_master, &ws)?;
-                        let r = router.fire(RouteInput::Event(&Event::Signal(Signal(libc::SIGWINCH))))?;
+                        let r = router
+                            .fire(RouteInput::Event(&Event::Signal(Signal(libc::SIGWINCH))))?;
                         for effect in r.effects {
                             apply_effect(&effect, &encoder, &mut master_queue, &mut actions)?;
                         }
@@ -456,12 +562,25 @@ try '--help' for more info
                     ReadResult::Success(n) => {
                         let mut decoded = Vec::new();
                         decoder.push(now, &stdin_buf[..n], &mut decoded);
-                        handle_decoded(&decoded, &encoder, &router, &mut master_queue, &mut actions)?;
+                        handle_decoded(
+                            &decoded,
+                            &encoder,
+                            &router,
+                            &mut master_queue,
+                            &mut actions,
+                        )?;
                     }
                     ReadResult::WouldBlock => break,
                     ReadResult::Eof => {
                         // actual terminal hung up, nothing useful to do anymore, quit
-                        begin_shutdown(&mut stopping, &mut services, &pty_child, Some(libc::SIGTERM), &mut child_kill_deadline, now)?;
+                        begin_shutdown(
+                            &mut stopping,
+                            &mut services,
+                            &pty_child,
+                            Some(libc::SIGTERM),
+                            &mut child_kill_deadline,
+                            now,
+                        )?;
                         continue 'mainloop;
                     }
                     ReadResult::EmptyInput => panic!("unexpected EmptyInput read result"),

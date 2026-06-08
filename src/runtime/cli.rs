@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
+use lexopt::prelude::*;
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use lexopt::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct Cli {
@@ -64,20 +64,18 @@ pub enum ConfigPathError {
     #[error("command {0:?} has no basename")]
     CommandHasNoBasename(OsString),
 
-    #[error("no config path was provided (implicit config lookup would use '{implicit_path}' if enabled)")]
-    NoConfigPath {
-        implicit_path: PathBuf,
-    },
+    #[error(
+        "no config path was provided (implicit config lookup would use '{implicit_path}' if enabled)"
+    )]
+    NoConfigPath { implicit_path: PathBuf },
 
-    #[error("refusing to use implicit config '{implicit_path}' under UID 0 / setuid / setgid; pass --config explicitly")]
-    ImplicitConfigRefused {
-        implicit_path: PathBuf,
-    },
+    #[error(
+        "refusing to use implicit config '{implicit_path}' under UID 0 / setuid / setgid; pass --config explicitly"
+    )]
+    ImplicitConfigRefused { implicit_path: PathBuf },
 
     #[error("no config path was provided and implicit config '{implicit_path}' does not exist")]
-    MissingImplicitConfig {
-        implicit_path: PathBuf,
-    },
+    MissingImplicitConfig { implicit_path: PathBuf },
 }
 
 pub fn config_path<'a>(cli: &'a Cli) -> Result<Cow<'a, Path>, ConfigPathError> {
@@ -103,15 +101,24 @@ pub fn config_path<'a>(cli: &'a Cli) -> Result<Cow<'a, Path>, ConfigPathError> {
 }
 
 fn command_basename(command: &OsStr) -> Result<&OsStr, ConfigPathError> {
-    Path::new(command).file_name().filter(|name| !name.is_empty())
+    Path::new(command)
+        .file_name()
+        .filter(|name| !name.is_empty())
         .ok_or_else(|| ConfigPathError::CommandHasNoBasename(command.to_owned()))
 }
 
 fn implicit_config_path(basename: &OsStr) -> PathBuf {
     match std::env::var_os("XDG_CONFIG_HOME") {
         Some(xdg) => PathBuf::from(xdg),
-        None => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join(".config"),
-    }.join("yxt").join("implicit").join(basename).with_extension("conf")
+        None => std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".config"),
+    }
+    .join("yxt")
+    .join("implicit")
+    .join(basename)
+    .with_extension("conf")
 }
 
 fn refuse_implicit_config() -> bool {

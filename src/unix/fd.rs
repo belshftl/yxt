@@ -20,7 +20,11 @@ impl<'a> NonblockingFd<'a> {
         if unsafe { libc::fcntl(raw, libc::F_SETFL, old_flags | libc::O_NONBLOCK) } < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        Ok(Self { fd, old_flags, restored: false })
+        Ok(Self {
+            fd,
+            old_flags,
+            restored: false,
+        })
     }
 
     pub fn restore(&mut self) -> std::io::Result<()> {
@@ -98,11 +102,14 @@ impl<K: Copy + Eq> ReadyFds<K> {
     }
 }
 
-pub fn select<'a, K: Copy + Eq>(fds: &SelectFds<'a, K>, timeout: Option<Duration>) -> std::io::Result<ReadyFds<K>> {
+pub fn select<'a, K: Copy + Eq>(
+    fds: &SelectFds<'a, K>,
+    timeout: Option<Duration>,
+) -> std::io::Result<ReadyFds<K>> {
     let mut rfds = fd_zero();
     let mut wfds = fd_zero();
-    let maxfd = fd_set(&mut rfds, fds.read.iter().map(|(_, fd)| fd))?.
-        max(fd_set(&mut wfds, fds.write.iter().map(|(_, fd)| fd))?);
+    let maxfd = fd_set(&mut rfds, fds.read.iter().map(|(_, fd)| fd))?
+        .max(fd_set(&mut wfds, fds.write.iter().map(|(_, fd)| fd))?);
 
     let mut tv = timeout.map(duration_to_timeval).transpose()?;
     let tv_ptr = match &mut tv {
@@ -110,7 +117,16 @@ pub fn select<'a, K: Copy + Eq>(fds: &SelectFds<'a, K>, timeout: Option<Duration
         None => std::ptr::null_mut(),
     };
 
-    if unsafe { libc::select(maxfd + 1, &mut rfds, &mut wfds, std::ptr::null_mut(), tv_ptr) } < 0 {
+    if unsafe {
+        libc::select(
+            maxfd + 1,
+            &mut rfds,
+            &mut wfds,
+            std::ptr::null_mut(),
+            tv_ptr,
+        )
+    } < 0
+    {
         return Err(std::io::Error::last_os_error());
     }
     let mut ready_r = Vec::new();
@@ -129,7 +145,7 @@ pub fn select<'a, K: Copy + Eq>(fds: &SelectFds<'a, K>, timeout: Option<Duration
     }
     Ok(ReadyFds {
         read: ready_r,
-        write: ready_w
+        write: ready_w,
     })
 }
 
@@ -141,14 +157,20 @@ fn fd_zero() -> libc::fd_set {
     }
 }
 
-fn fd_set<'a, 'b>(set: &mut libc::fd_set, fds: impl IntoIterator<Item = &'b BorrowedFd<'a>>) -> std::io::Result<RawFd> where 'a: 'b {
+fn fd_set<'a, 'b>(
+    set: &mut libc::fd_set,
+    fds: impl IntoIterator<Item = &'b BorrowedFd<'a>>,
+) -> std::io::Result<RawFd>
+where
+    'a: 'b,
+{
     let mut maxfd = -1;
     for fd in fds {
         let raw = fd.as_raw_fd();
         if raw >= libc::FD_SETSIZE as libc::c_int {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("fd {raw} is too large for select(2)")
+                format!("fd {raw} is too large for select(2)"),
             ));
         }
         unsafe {

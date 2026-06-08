@@ -221,12 +221,8 @@ pub struct Signal(pub libc::c_int);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CommandSpec {
-    Exec {
-        argv: Vec<String>,
-    },
-    Shell {
-        command: String,
-    },
+    Exec { argv: Vec<String> },
+    Shell { command: String },
 }
 
 // ================================================================================================
@@ -326,17 +322,12 @@ impl ModsPattern {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TokenPattern {
-    Key {
-        key: KeyPattern,
-        mods: ModsPattern,
-    },
+    Key { key: KeyPattern, mods: ModsPattern },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum InheritToken {
-    Key {
-        key: KeyPattern,
-    },
+    Key { key: KeyPattern },
 }
 
 impl InheritToken {
@@ -360,7 +351,7 @@ impl InheritToken {
                         kind: payload.kind,
                     }
                 }
-            }
+            },
         }
     }
 }

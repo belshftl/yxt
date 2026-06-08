@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-use std::ffi::{CStr};
+use libc::{termios, winsize};
+use std::ffi::CStr;
 use std::io::Error;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
-use libc::{termios, winsize};
 
 #[derive(Debug)]
 pub struct RawTerminal {
@@ -20,10 +20,14 @@ impl RawTerminal {
 
         let old = tcgetattr_raw(raw_fd)?;
         let mut new = old;
-        new.c_iflag &= !(
-            libc::IGNBRK | libc::BRKINT | libc::PARMRK | libc::ISTRIP |
-            libc::INLCR | libc::IGNCR | libc::ICRNL | libc::IXON
-        );
+        new.c_iflag &= !(libc::IGNBRK
+            | libc::BRKINT
+            | libc::PARMRK
+            | libc::ISTRIP
+            | libc::INLCR
+            | libc::IGNCR
+            | libc::ICRNL
+            | libc::IXON);
         new.c_oflag &= !libc::OPOST;
         new.c_lflag &= !(libc::ECHO | libc::ECHONL | libc::ICANON | libc::ISIG | libc::IEXTEN);
         new.c_cflag &= !(libc::CSIZE | libc::PARENB);
@@ -32,7 +36,11 @@ impl RawTerminal {
         new.c_cc[libc::VTIME] = 0;
 
         tcsetattr_raw(raw_fd, &new)?;
-        Ok(Self { fd, old_termios: old, restored: false })
+        Ok(Self {
+            fd,
+            old_termios: old,
+            restored: false,
+        })
     }
 
     pub fn restore(&mut self) -> std::io::Result<()> {
@@ -140,9 +148,8 @@ pub enum PtyOpenError {
 }
 
 pub fn open_pty_pair() -> Result<PtyPair, PtyOpenError> {
-    let master_raw_fd = unsafe {
-        libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC)
-    };
+    let master_raw_fd =
+        unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
     if master_raw_fd < 0 {
         return Err(PtyOpenError::PosixOpenpt(Error::last_os_error()));
     }
@@ -165,7 +172,10 @@ pub fn open_pty_pair() -> Result<PtyPair, PtyOpenError> {
     let name = unsafe { CStr::from_ptr(name_ptr) }.to_owned();
 
     let slave_raw_fd = unsafe {
-        libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC)
+        libc::open(
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        )
     };
     if slave_raw_fd < 0 {
         return Err(PtyOpenError::OpenSlave(Error::last_os_error()));

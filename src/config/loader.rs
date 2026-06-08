@@ -4,10 +4,10 @@ use std::borrow::Cow;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-use crate::model::Config;
 use super::ast::{Expr, FileId, LineCtx, Literal, Span, Stmt};
 use super::lower::{ConfigBuilder, ConfigError};
 use super::parse::{ParseError, parse_line};
+use crate::model::Config;
 
 #[derive(Debug, Default)]
 pub struct SourceFile {
@@ -19,7 +19,11 @@ pub struct SourceFile {
 impl SourceFile {
     pub fn line(&self, line: usize) -> Option<&str> {
         let start = *self.line_starts.get(line)?;
-        let end = self.line_starts.get(line + 1).copied().unwrap_or(self.text.len());
+        let end = self
+            .line_starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(self.text.len());
         let line = &self.text[start..end];
         Some(line.trim_end_matches(['\n', '\r']))
     }
@@ -34,7 +38,11 @@ impl SourceMap {
     pub fn add_file(&mut self, path: PathBuf, text: String) -> FileId {
         let id = FileId(self.files.len());
         let line_starts = line_starts(&text);
-        self.files.push(SourceFile { path, text, line_starts });
+        self.files.push(SourceFile {
+            path,
+            text,
+            line_starts,
+        });
         id
     }
 
@@ -81,7 +89,9 @@ pub enum ConfigLoadError {
     #[error("duplicate @version directive in file")]
     DuplicateVersion { span: Span },
 
-    #[error("@version directive versions don't match across included files: expected {expected}, got {got}")]
+    #[error(
+        "@version directive versions don't match across included files: expected {expected}, got {got}"
+    )]
     VersionMismatch { expected: u32, got: u32, span: Span },
 
     #[error("invalid arguments for directive '@version'")]
@@ -125,25 +135,31 @@ impl ConfigLoader {
         if self.version.is_none() {
             return Err(ConfigLoadError::MissingVersion { path });
         }
-        self.builder.take_finish().map_err(ConfigLoadError::Semantic)
+        self.builder
+            .take_finish()
+            .map_err(ConfigLoadError::Semantic)
     }
 
     pub fn report_err(&self, err: ConfigLoadError) {
         match err {
             ConfigLoadError::UnsupportedVersion { span, .. }
-                | ConfigLoadError::VersionMustBeFirst { span }
-                | ConfigLoadError::DuplicateVersion { span }
-                | ConfigLoadError::VersionMismatch { span, .. }
-                | ConfigLoadError::BadVersionArgs { span }
-                | ConfigLoadError::BadIncludeArgs { span } => self.report_err_span(&err, span),
+            | ConfigLoadError::VersionMustBeFirst { span }
+            | ConfigLoadError::DuplicateVersion { span }
+            | ConfigLoadError::VersionMismatch { span, .. }
+            | ConfigLoadError::BadVersionArgs { span }
+            | ConfigLoadError::BadIncludeArgs { span } => self.report_err_span(&err, span),
             ConfigLoadError::Syntax(ParseError { kind, span }) => self.report_err_span(&kind, span),
-            ConfigLoadError::Semantic(ConfigError { kind, span }) => self.report_err_span(&kind, span),
+            ConfigLoadError::Semantic(ConfigError { kind, span }) => {
+                self.report_err_span(&kind, span)
+            }
             ConfigLoadError::MissingVersion { path } => {
                 let term = std::io::stderr().is_terminal();
                 let reset = if term { "\x1b[0m" } else { "" };
                 let bold = if term { "\x1b[1m" } else { "" };
                 let err_color = if term { "\x1b[1;31m" } else { "" };
-                let path = if let Some(home) = std::env::var_os("HOME") && let Ok(rest) = path.strip_prefix(Path::new(&home)) {
+                let path = if let Some(home) = std::env::var_os("HOME")
+                    && let Ok(rest) = path.strip_prefix(Path::new(&home))
+                {
                     Path::new("~").join(rest)
                 } else {
                     path
@@ -165,13 +181,18 @@ impl ConfigLoader {
         let err_color = if term { "\x1b[1;31m" } else { "" };
 
         let mut filepath = Cow::Borrowed(self.sources.path(span.ctx.file));
-        if let Some(home) = std::env::var_os("HOME") && let Ok(rest) = filepath.strip_prefix(Path::new(&home)) {
+        if let Some(home) = std::env::var_os("HOME")
+            && let Ok(rest) = filepath.strip_prefix(Path::new(&home))
+        {
             filepath = Cow::Owned(Path::new("~").join(rest));
         }
 
         let line = self.sources.line(span.ctx).unwrap();
         if span.end < span.start || span.start > line.len() {
-            panic!("invalid diagnostic span: {span:?} for line length {}", line.len());
+            panic!(
+                "invalid diagnostic span: {span:?} for line length {}",
+                line.len()
+            );
         }
         let display_line = tab_expand(line, TAB_WIDTH);
         let start_col = display_col_of(line, span.start, TAB_WIDTH);
@@ -180,12 +201,16 @@ impl ConfigLoader {
         let line_no = format!("{:4}", span.ctx.line + 1);
         eprintln!(
             "{bold}{}:{}:{}{reset}: {err_color}error: {reset}{err}",
-            filepath.display(), span.ctx.line + 1, span.start + 1,
+            filepath.display(),
+            span.ctx.line + 1,
+            span.start + 1,
         );
         eprintln!(" {line_no} | {display_line}");
         eprintln!(
             " {} | {}{err_color}{}{reset}",
-            " ".repeat(line_no.len()), " ".repeat(start_col), "^".repeat(width),
+            " ".repeat(line_no.len()),
+            " ".repeat(start_col),
+            "^".repeat(width),
         );
     }
 
@@ -225,8 +250,11 @@ impl ConfigLoader {
     }
 
     fn apply_parsed_stmt(
-        &mut self, stmt: Stmt, is_root: bool, base_dir: &Path,
-        seen_non_version_stmt_here: &mut bool
+        &mut self,
+        stmt: Stmt,
+        is_root: bool,
+        base_dir: &Path,
+        seen_non_version_stmt_here: &mut bool,
     ) -> Result<(), ConfigLoadError> {
         match stmt {
             Stmt::Directive { name, args, span } if name == "version" => {
@@ -249,12 +277,19 @@ impl ConfigLoader {
                 }
                 *seen_non_version_stmt_here = true;
                 self.seen_non_version_stmt = true;
-                self.builder.apply_stmt(other).map_err(ConfigLoadError::Semantic)
+                self.builder
+                    .apply_stmt(other)
+                    .map_err(ConfigLoadError::Semantic)
             }
         }
     }
 
-    fn apply_version(&mut self, args: Vec<Expr>, span: Span, is_root: bool) -> Result<(), ConfigLoadError> {
+    fn apply_version(
+        &mut self,
+        args: Vec<Expr>,
+        span: Span,
+        is_root: bool,
+    ) -> Result<(), ConfigLoadError> {
         let version = expect_version_arg(args, span)?;
         if version != 1 {
             return Err(ConfigLoadError::UnsupportedVersion { version, span });
@@ -284,7 +319,12 @@ impl ConfigLoader {
         Ok(())
     }
 
-    fn apply_include(&mut self, args: Vec<Expr>, span: Span, base_dir: &Path) -> Result<(), ConfigLoadError> {
+    fn apply_include(
+        &mut self,
+        args: Vec<Expr>,
+        span: Span,
+        base_dir: &Path,
+    ) -> Result<(), ConfigLoadError> {
         let include_path = expect_include_arg(args, span)?;
         let path = if include_path.is_absolute() {
             include_path
@@ -329,7 +369,11 @@ fn tab_expand(line: &str, tabw: usize) -> String {
 
 fn expect_version_arg(args: Vec<Expr>, span: Span) -> Result<u32, ConfigLoadError> {
     let mut args = args.into_iter();
-    let Some(Expr::Literal { value: Literal::Int(version), .. }) = args.next() else {
+    let Some(Expr::Literal {
+        value: Literal::Int(version),
+        ..
+    }) = args.next()
+    else {
         return Err(ConfigLoadError::BadVersionArgs { span });
     };
     if args.next().is_some() {
@@ -340,7 +384,11 @@ fn expect_version_arg(args: Vec<Expr>, span: Span) -> Result<u32, ConfigLoadErro
 
 fn expect_include_arg(args: Vec<Expr>, span: Span) -> Result<PathBuf, ConfigLoadError> {
     let mut args = args.into_iter();
-    let Some(Expr::Literal { value: Literal::String(path), .. }) = args.next() else {
+    let Some(Expr::Literal {
+        value: Literal::String(path),
+        ..
+    }) = args.next()
+    else {
         return Err(ConfigLoadError::BadIncludeArgs { span });
     };
     if args.next().is_some() {
@@ -359,7 +407,8 @@ mod tests {
 
     use crate::config::lower::ErrorKind;
     use crate::model::{
-        Action, CommandSpec, Event, Key, KeyPattern, Mods, ModsPattern, Source, Target, TokenPattern,
+        Action, CommandSpec, Event, Key, KeyPattern, Mods, ModsPattern, Source, Target,
+        TokenPattern,
     };
 
     fn write_file(dir: &TempDir, rel: &str, text: &str) -> std::path::PathBuf {
@@ -382,9 +431,13 @@ mod tests {
     #[test]
     fn empty_root_requires_version() {
         let dir = tempfile::tempdir().unwrap();
-        let root = write_file(&dir, "root.conf", r#"
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 # comment
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::MissingVersion { .. }));
@@ -393,9 +446,13 @@ mod tests {
     #[test]
     fn root_requires_version() {
         let dir = tempfile::tempdir().unwrap();
-        let root = write_file(&dir, "root.conf", r#"
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 define group "x"
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::VersionMustBeFirst { .. }));
@@ -404,13 +461,17 @@ define group "x"
     #[test]
     fn root_version_may_follow_empty_lines_and_comments() {
         let dir = tempfile::tempdir().unwrap();
-        let root = write_file(&dir, "root.conf", r#"
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 # comment
     # comment with leading whitespace
 @version 1
 
 key(f1) => send_key('x')
-"#);
+"#,
+        );
 
         let cfg = parse(&root).unwrap();
         assert_eq!(cfg.mappings.len(), 1);
@@ -419,10 +480,14 @@ key(f1) => send_key('x')
     #[test]
     fn root_version_must_be_first_stmt_definition_before_version() {
         let dir = tempfile::tempdir().unwrap();
-        let root = write_file(&dir, "root.conf", r#"
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 define group "x"
 @version 1
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::VersionMustBeFirst { .. }));
@@ -431,10 +496,14 @@ define group "x"
     #[test]
     fn root_version_must_be_first_stmt_mapping_before_version() {
         let dir = tempfile::tempdir().unwrap();
-        let root = write_file(&dir, "root.conf", r#"
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 key(f1) => send_key('x')
 @version 1
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::VersionMustBeFirst { .. }));
@@ -443,13 +512,21 @@ key(f1) => send_key('x')
     #[test]
     fn root_version_must_be_first_stmt_include_before_version() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "inc.conf", r#"
+        write_file(
+            &dir,
+            "inc.conf",
+            r#"
 key(f1) => send_key('x')
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @include "inc.conf"
 @version 1
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::VersionMustBeFirst { .. }));
@@ -458,10 +535,14 @@ key(f1) => send_key('x')
     #[test]
     fn root_duplicate_version_is_error() {
         let dir = tempfile::tempdir().unwrap();
-        let root = write_file(&dir, "root.conf", r#"
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @version 1
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::DuplicateVersion { .. }));
@@ -470,12 +551,19 @@ key(f1) => send_key('x')
     #[test]
     fn unsupported_root_version_is_error() {
         let dir = tempfile::tempdir().unwrap();
-        let root = write_file(&dir, "root.conf", r#"
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 2
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
-        assert!(matches!(err, ConfigLoadError::UnsupportedVersion { version: 2, .. }));
+        assert!(matches!(
+            err,
+            ConfigLoadError::UnsupportedVersion { version: 2, .. }
+        ));
     }
 
     #[test]
@@ -485,31 +573,48 @@ key(f1) => send_key('x')
             r#"@version "1""#,
             r#"@version 1 2"#,
             r#"@version -1"#,
-        ].into_iter().enumerate() {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let dir = tempfile::tempdir().unwrap();
             let root = write_file(&dir, &format!("root-{idx}.conf"), text);
 
             let err = parse_err(&root);
-            assert!(matches!(err, ConfigLoadError::BadVersionArgs { .. }), "{text:?}: {err:?}");
+            assert!(
+                matches!(err, ConfigLoadError::BadVersionArgs { .. }),
+                "{text:?}: {err:?}"
+            );
         }
     }
 
     #[test]
     fn include_expands_inline_and_relative_to_root() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "groups.conf", r#"
+        write_file(
+            &dir,
+            "groups.conf",
+            r#"
 define group "reload"
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "groups.conf"
 key(f5) => group("reload")
 group("reload") => sh("reload")
-"#);
+"#,
+        );
 
         let cfg = parse(&root).unwrap();
         assert_eq!(cfg.groups.len(), 1);
-        assert_eq!(cfg.groups.name(cfg.groups.lookup("reload").unwrap()), "reload");
+        assert_eq!(
+            cfg.groups.name(cfg.groups.lookup("reload").unwrap()),
+            "reload"
+        );
         assert_eq!(cfg.mappings.len(), 2);
         assert_eq!(
             cfg.mappings[0].from,
@@ -530,14 +635,22 @@ group("reload") => sh("reload")
     #[test]
     fn include_order_is_semantically_inline() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "groups.conf", r#"
+        write_file(
+            &dir,
+            "groups.conf",
+            r#"
 define group "x"
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 key(f1) => group("x")
 @include "groups.conf"
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::Semantic(ConfigError {
@@ -548,17 +661,29 @@ key(f1) => group("x")
     #[test]
     fn nested_include_resolves_relative_to_including_file() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "sub/groups.conf", r#"
+        write_file(
+            &dir,
+            "sub/groups.conf",
+            r#"
 define group "nested"
-"#);
-        write_file(&dir, "sub/include-groups.conf", r#"
+"#,
+        );
+        write_file(
+            &dir,
+            "sub/include-groups.conf",
+            r#"
 @include "groups.conf"
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "sub/include-groups.conf"
 key(f1) => group("nested")
-"#);
+"#,
+        );
 
         let cfg = parse(&root).unwrap();
         assert_eq!(cfg.groups.len(), 1);
@@ -569,13 +694,21 @@ key(f1) => group("nested")
     #[test]
     fn included_file_inherits_root_version_when_omitted() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "inc.conf", r#"
+        write_file(
+            &dir,
+            "inc.conf",
+            r#"
 key(f1) => send_key('x')
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "inc.conf"
-"#);
+"#,
+        );
 
         let cfg = parse(&root).unwrap();
         assert_eq!(cfg.mappings.len(), 1);
@@ -584,14 +717,22 @@ key(f1) => send_key('x')
     #[test]
     fn included_file_may_repeat_matching_version() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "inc.conf", r#"
+        write_file(
+            &dir,
+            "inc.conf",
+            r#"
 @version 1
 key(f1) => send_key('x')
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "inc.conf"
-"#);
+"#,
+        );
 
         let cfg = parse(&root).unwrap();
         assert_eq!(cfg.mappings.len(), 1);
@@ -600,14 +741,22 @@ key(f1) => send_key('x')
     #[test]
     fn included_version_must_match_root_version() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "inc.conf", r#"
+        write_file(
+            &dir,
+            "inc.conf",
+            r#"
 @version 2
 key(f1) => send_key('x')
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "inc.conf"
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(
@@ -616,25 +765,29 @@ key(f1) => send_key('x')
                 expected: 1,
                 got: 2,
                 ..
-            }
-            | ConfigLoadError::UnsupportedVersion {
-                version: 2,
-                ..
-            }
+            } | ConfigLoadError::UnsupportedVersion { version: 2, .. }
         ));
     }
 
     #[test]
     fn included_version_must_appear_before_stmts() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "inc.conf", r#"
+        write_file(
+            &dir,
+            "inc.conf",
+            r#"
 key(f1) => send_key('x')
 @version 1
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "inc.conf"
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::VersionMustBeFirst { .. }));
@@ -655,22 +808,32 @@ key(f1) => send_key('x')
 @version 1
 @include "a" "b"
 "#,
-        ].into_iter().enumerate() {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let dir = tempfile::tempdir().unwrap();
             let root = write_file(&dir, &format!("root-{idx}.conf"), text);
 
             let err = parse_err(&root);
-            assert!(matches!(err, ConfigLoadError::BadIncludeArgs { .. }), "{text:?}: {err:?}");
+            assert!(
+                matches!(err, ConfigLoadError::BadIncludeArgs { .. }),
+                "{text:?}: {err:?}"
+            );
         }
     }
 
     #[test]
     fn missing_include_file_is_io_error() {
         let dir = tempfile::tempdir().unwrap();
-        let root = write_file(&dir, "root.conf", r#"
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "missing.conf"
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::Io { .. }));
@@ -679,13 +842,21 @@ key(f1) => send_key('x')
     #[test]
     fn direct_include_cycle_is_error() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "a.conf", r#"
+        write_file(
+            &dir,
+            "a.conf",
+            r#"
 @include "a.conf"
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "a.conf"
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::IncludeCycle { .. }));
@@ -694,19 +865,35 @@ key(f1) => send_key('x')
     #[test]
     fn indirect_include_cycle_is_error() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "a.conf", r#"
+        write_file(
+            &dir,
+            "a.conf",
+            r#"
 @include "b.conf"
-"#);
-        write_file(&dir, "b.conf", r#"
+"#,
+        );
+        write_file(
+            &dir,
+            "b.conf",
+            r#"
 @include "c.conf"
-"#);
-        write_file(&dir, "c.conf", r#"
+"#,
+        );
+        write_file(
+            &dir,
+            "c.conf",
+            r#"
 @include "a.conf"
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "a.conf"
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::IncludeCycle { .. }));
@@ -715,14 +902,22 @@ key(f1) => send_key('x')
     #[test]
     fn repeated_include_is_allowed_but_semantics_may_reject_duplicates() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "group.conf", r#"
+        write_file(
+            &dir,
+            "group.conf",
+            r#"
 define group "x"
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "group.conf"
 @include "group.conf"
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::Semantic(ConfigError {
@@ -733,23 +928,43 @@ define group "x"
     #[test]
     fn nested_include_without_duplicate_definitions_is_allowed() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "common-a.conf", r#"
+        write_file(
+            &dir,
+            "common-a.conf",
+            r#"
 key(f1) => send_key('a')
-"#);
-        write_file(&dir, "common-b.conf", r#"
+"#,
+        );
+        write_file(
+            &dir,
+            "common-b.conf",
+            r#"
 key(f2) => send_key('b')
-"#);
-        write_file(&dir, "left.conf", r#"
+"#,
+        );
+        write_file(
+            &dir,
+            "left.conf",
+            r#"
 @include "common-a.conf"
-"#);
-        write_file(&dir, "right.conf", r#"
+"#,
+        );
+        write_file(
+            &dir,
+            "right.conf",
+            r#"
 @include "common-b.conf"
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "left.conf"
 @include "right.conf"
-"#);
+"#,
+        );
 
         let cfg = parse(&root).unwrap();
         assert_eq!(cfg.mappings.len(), 2);
@@ -758,10 +973,14 @@ key(f2) => send_key('b')
     #[test]
     fn syntax_error_in_root_is_reported_as_syntax() {
         let dir = tempfile::tempdir().unwrap();
-        let root = write_file(&dir, "root.conf", r#"
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 key(f1) => send_key('x') => send_key('y')
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::Syntax { .. }));
@@ -770,13 +989,21 @@ key(f1) => send_key('x') => send_key('y')
     #[test]
     fn syntax_error_in_included_file_is_reported_as_syntax() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "bad.conf", r#"
+        write_file(
+            &dir,
+            "bad.conf",
+            r#"
 key(f1) => send_key('x') => send_key('y')
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "bad.conf"
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         assert!(matches!(err, ConfigLoadError::Syntax { .. }));
@@ -785,19 +1012,30 @@ key(f1) => send_key('x') => send_key('y')
     #[test]
     fn semantic_error_in_included_file_has_included_line_span() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "bad.conf", r#"
+        write_file(
+            &dir,
+            "bad.conf",
+            r#"
 # line 1
 # line 2
 key(nope) => send_key('x')
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "bad.conf"
-"#);
+"#,
+        );
 
         let err = parse_err(&root);
         match err {
-            ConfigLoadError::Semantic(ConfigError { kind: ErrorKind::UnknownKey { name }, span }) => {
+            ConfigLoadError::Semantic(ConfigError {
+                kind: ErrorKind::UnknownKey { name },
+                span,
+            }) => {
                 assert_eq!(name, "nope");
                 assert_eq!(span.ctx.line, 3);
             }
@@ -808,13 +1046,21 @@ key(nope) => send_key('x')
     #[test]
     fn include_path_with_comment_and_hash_inside_string() {
         let dir = tempfile::tempdir().unwrap();
-        write_file(&dir, "a#b.conf", r#"
+        write_file(
+            &dir,
+            "a#b.conf",
+            r#"
 key(f1) => send_key('x')
-"#);
-        let root = write_file(&dir, "root.conf", r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 @include "a#b.conf" # this is a comment
-"#);
+"#,
+        );
 
         let cfg = parse(&root).unwrap();
         assert_eq!(cfg.mappings.len(), 1);
@@ -823,13 +1069,24 @@ key(f1) => send_key('x')
     #[test]
     fn absolute_include_path_is_accepted() {
         let dir = tempfile::tempdir().unwrap();
-        let inc = write_file(&dir, "inc.conf", r#"
+        let inc = write_file(
+            &dir,
+            "inc.conf",
+            r#"
 key(f1) => send_key('x')
-"#);
-        let root = write_file(&dir, "root.conf", &format!(r#"
+"#,
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            &format!(
+                r#"
 @version 1
 @include "{}"
-"#, inc.display()));
+"#,
+                inc.display()
+            ),
+        );
 
         let cfg = parse(&root).unwrap();
         assert_eq!(cfg.mappings.len(), 1);
@@ -838,7 +1095,10 @@ key(f1) => send_key('x')
     #[test]
     fn parser_finishes_builder_into_config() {
         let dir = tempfile::tempdir().unwrap();
-        let root = write_file(&dir, "root.conf", r#"
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
 @version 1
 define group "reload"
 
@@ -846,7 +1106,8 @@ key(f5) => group("reload")
 sockdata_utf8("reload") => group("reload")
 group("reload") => send_key('r', ctrl)
 group("reload") => sh("reload")
-"#);
+"#,
+        );
         let cfg = parse(&root).unwrap();
 
         assert_eq!(cfg.groups.len(), 1);

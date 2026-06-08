@@ -558,16 +558,25 @@ mod tests {
     fn kitty_flag_constants_can_be_tracked() {
         let mut tracker = TerminalModeTracker::new();
 
-        assert!(tracker.observe_child_output(format!("\x1b[={}u", kitty::FLAG_REPORT_ALL_KEYS).as_bytes()));
+        assert!(
+            tracker
+                .observe_child_output(format!("\x1b[={}u", kitty::FLAG_REPORT_ALL_KEYS).as_bytes())
+        );
         assert_eq!(tracker.mode().kitty_flags, kitty::FLAG_REPORT_ALL_KEYS);
 
-        assert!(tracker.observe_child_output(format!("\x1b[={};2u", kitty::FLAG_REPORT_EVENT_TYPES).as_bytes()));
+        assert!(tracker.observe_child_output(
+            format!("\x1b[={};2u", kitty::FLAG_REPORT_EVENT_TYPES).as_bytes()
+        ));
         assert_eq!(
             tracker.mode().kitty_flags,
             kitty::FLAG_REPORT_ALL_KEYS | kitty::FLAG_REPORT_EVENT_TYPES,
         );
 
-        assert!(tracker.observe_child_output(format!("\x1b[={};3u", kitty::FLAG_REPORT_ALL_KEYS).as_bytes()));
+        assert!(
+            tracker.observe_child_output(
+                format!("\x1b[={};3u", kitty::FLAG_REPORT_ALL_KEYS).as_bytes()
+            )
+        );
         assert_eq!(tracker.mode().kitty_flags, kitty::FLAG_REPORT_EVENT_TYPES);
     }
 }

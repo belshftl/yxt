@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 
+use super::{
+    control::{self, CsiSeq},
+    mode::TermMode,
+};
 use crate::model::{Direction, Key, KeyEventKind, KeypadKey, Mods, Token};
-use super::{control::{self, CsiSeq}, mode::TermMode};
 
 pub fn decode_c0(byte: u8) -> Option<Token> {
     // the name is slightly inaccurate, this also checks DEL and c < 0x20
@@ -69,7 +72,7 @@ pub fn decode_ss3(body: &[u8], mode: TermMode) -> Option<Token> {
 
 pub fn decode_csi(csi: CsiSeq<'_>, mode: TermMode) -> Option<Token> {
     if !csi.intermediates.is_empty() {
-            return None;
+        return None;
     }
 
     let params = control::parse_simple_params(csi.params)?;
@@ -81,17 +84,26 @@ pub fn decode_csi(csi: CsiSeq<'_>, mode: TermMode) -> Option<Token> {
     // PC-Style Function Keys
     //
     // it's a table there but it's basically a bitfield with 1 added
-    let mods = if param_count > 1 && m > 1 { // do nothing on 0 or 1 (1-1 = 0)
+    let mods = if param_count > 1 && m > 1 {
+        // do nothing on 0 or 1 (1-1 = 0)
         let bits = m - 1; // remove the aforementioned 1
         if bits & !0b1111 != 0 {
             return None; // malformed input
         }
 
         let mut mods = Mods::EMPTY;
-        if bits & 1 != 0 { mods |= Mods::SHIFT; }
-        if bits & 2 != 0 { mods |= Mods::ALT; }
-        if bits & 4 != 0 { mods |= Mods::CTRL; }
-        if bits & 8 != 0 { mods |= Mods::META; }
+        if bits & 1 != 0 {
+            mods |= Mods::SHIFT;
+        }
+        if bits & 2 != 0 {
+            mods |= Mods::ALT;
+        }
+        if bits & 4 != 0 {
+            mods |= Mods::CTRL;
+        }
+        if bits & 8 != 0 {
+            mods |= Mods::META;
+        }
         mods
     } else {
         Mods::EMPTY
@@ -148,9 +160,7 @@ pub fn decode_csi(csi: CsiSeq<'_>, mode: TermMode) -> Option<Token> {
         b'R' => Key::Function(3),
         b'S' => Key::Function(4),
 
-        b'E' if mode.deckpam || mode.kitty_flags != 0 => {
-            Key::Keypad(KeypadKey::Begin)
-        }
+        b'E' if mode.deckpam || mode.kitty_flags != 0 => Key::Keypad(KeypadKey::Begin),
 
         _ => return None,
     };
@@ -207,10 +217,18 @@ fn encode_key(key: Key, mods: Mods, mode: TermMode) -> Option<Vec<u8>> {
         return None;
     } else {
         let mut param = 1u8;
-        if (mods & Mods::SHIFT) != Mods::EMPTY { param += 1; }
-        if (mods & Mods::ALT) != Mods::EMPTY   { param += 2; }
-        if (mods & Mods::CTRL) != Mods::EMPTY  { param += 4; }
-        if (mods & Mods::META) != Mods::EMPTY  { param += 8; }
+        if (mods & Mods::SHIFT) != Mods::EMPTY {
+            param += 1;
+        }
+        if (mods & Mods::ALT) != Mods::EMPTY {
+            param += 2;
+        }
+        if (mods & Mods::CTRL) != Mods::EMPTY {
+            param += 4;
+        }
+        if (mods & Mods::META) != Mods::EMPTY {
+            param += 8;
+        }
         param
     };
 
@@ -344,18 +362,9 @@ mod tests {
 
     #[test]
     fn decodes_c0_control_letters() {
-        assert_eq!(
-            decode_c0(1),
-            Some(Token::press_utf8('a', Mods::CTRL)),
-        );
-        assert_eq!(
-            decode_c0(26),
-            Some(Token::press_utf8('z', Mods::CTRL)),
-        );
-        assert_eq!(
-            decode_c0(27),
-            Some(Token::press_key(Key::Esc, Mods::EMPTY)),
-        );
+        assert_eq!(decode_c0(1), Some(Token::press_utf8('a', Mods::CTRL)),);
+        assert_eq!(decode_c0(26), Some(Token::press_utf8('z', Mods::CTRL)),);
+        assert_eq!(decode_c0(27), Some(Token::press_key(Key::Esc, Mods::EMPTY)),);
     }
 
     #[test]
@@ -397,13 +406,13 @@ mod tests {
 
     #[test]
     fn ss3_keypad_requires_deckpam() {
-        assert_eq!(
-            decode_ss3(b"p", mode(false, false)),
-            None
-        );
+        assert_eq!(decode_ss3(b"p", mode(false, false)), None);
         assert_eq!(
             decode_ss3(b"p", mode(false, true)),
-            Some(Token::press_key(Key::Keypad(KeypadKey::Digit(0)), Mods::EMPTY)),
+            Some(Token::press_key(
+                Key::Keypad(KeypadKey::Digit(0)),
+                Mods::EMPTY
+            )),
         );
         assert_eq!(
             decode_ss3(b"M", mode(false, true)),
@@ -414,24 +423,15 @@ mod tests {
     #[test]
     fn encodes_utf8_plain_and_legacy_mods() {
         assert_eq!(
-            encode_token(
-                &Token::press_utf8('x', Mods::EMPTY),
-                mode(false, false),
-            ),
+            encode_token(&Token::press_utf8('x', Mods::EMPTY), mode(false, false),),
             Some(b"x".to_vec()),
         );
         assert_eq!(
-            encode_token(
-                &Token::press_utf8('x', Mods::CTRL),
-                mode(false, false),
-            ),
+            encode_token(&Token::press_utf8('x', Mods::CTRL), mode(false, false),),
             Some(vec![0x18]),
         );
         assert_eq!(
-            encode_token(
-                &Token::press_utf8('x', Mods::ALT),
-                mode(false, false),
-            ),
+            encode_token(&Token::press_utf8('x', Mods::ALT), mode(false, false),),
             Some(b"\x1bx".to_vec()),
         );
     }

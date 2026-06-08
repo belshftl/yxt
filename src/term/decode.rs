@@ -2,11 +2,12 @@
 
 use std::time::{Duration, Instant};
 
-use crate::model::{Key, KeyEventKind, Mods, Token};
 use super::{
     control::{self, ControlPrefix, CsiScan, StringControlKind, StringScan},
-    kitty, legacy, mode::TermMode
+    kitty, legacy,
+    mode::TermMode,
 };
+use crate::model::{Key, KeyEventKind, Mods, Token};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decoded {
@@ -166,7 +167,7 @@ impl Decoder {
                     kind: KeyEventKind::Press,
                 }));
             }
-            _ => self.flush_unknown(out)
+            _ => self.flush_unknown(out),
         }
     }
 
@@ -228,7 +229,7 @@ fn decode_esc(buf: &[u8], mode: TermMode, esc_byte_is_partial_esc: bool) -> Deco
                 }),
                 consumed: 1,
             }
-        }
+        };
     }
 
     match control::classify_esc_prefixed(buf) {
@@ -271,7 +272,7 @@ fn decode_csi(buf: &[u8], mode: TermMode) -> DecodeOne {
         CsiScan::Malformed { consumed } => DecodeOne::Emit {
             item: Decoded::Unknown(buf[..consumed].to_vec()),
             consumed,
-        }
+        },
     }
 }
 
@@ -304,14 +305,20 @@ fn decode_string_control(buf: &[u8], kind: StringControlKind) -> DecodeOne {
 fn decode_alt_prefixed(buf: &[u8], mode: TermMode) -> DecodeOne {
     let sub = &buf[1..];
     match decode_one_non_esc(sub, mode) {
-        DecodeOne::Emit { item: Decoded::Token(mut token), consumed } => {
+        DecodeOne::Emit {
+            item: Decoded::Token(mut token),
+            consumed,
+        } => {
             add_alt(&mut token);
             DecodeOne::Emit {
                 item: Decoded::Token(token),
                 consumed: consumed + 1,
             }
         }
-        DecodeOne::Emit { item: Decoded::Unknown(_), consumed } => DecodeOne::Emit {
+        DecodeOne::Emit {
+            item: Decoded::Unknown(_),
+            consumed,
+        } => DecodeOne::Emit {
             item: Decoded::Unknown(buf[..consumed + 1].to_vec()),
             consumed: consumed + 1,
         },
@@ -551,7 +558,14 @@ mod tests {
 
         d.push(t0 + Duration::from_millis(5), b"[A", &mut out);
 
-        assert_eq!(out, vec![key(Key::Arrow(Direction::Up), Mods::EMPTY, KeyEventKind::Press)]);
+        assert_eq!(
+            out,
+            vec![key(
+                Key::Arrow(Direction::Up),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]
+        );
         assert!(d.is_idle());
     }
 
@@ -562,10 +576,7 @@ mod tests {
         let t0 = Instant::now();
 
         d.push(t0, b"\x1b", &mut out);
-        assert_eq!(
-            out,
-            vec![key(Key::Esc, Mods::EMPTY, KeyEventKind::Press)],
-        );
+        assert_eq!(out, vec![key(Key::Esc, Mods::EMPTY, KeyEventKind::Press)],);
 
         d.push(t0 + Duration::from_millis(5), b"[A", &mut out);
 
@@ -592,7 +603,14 @@ mod tests {
 
         d.push(t0 + Duration::from_millis(5), b"A", &mut out);
 
-        assert_eq!(out, vec![key(Key::Arrow(Direction::Up), Mods::EMPTY, KeyEventKind::Press)]);
+        assert_eq!(
+            out,
+            vec![key(
+                Key::Arrow(Direction::Up),
+                Mods::EMPTY,
+                KeyEventKind::Press
+            )]
+        );
     }
 
     #[test]
@@ -634,7 +652,10 @@ mod tests {
 
         d.push(t0 + Duration::from_millis(5), b"P", &mut out);
 
-        assert_eq!(out, vec![key(Key::Function(1), Mods::EMPTY, KeyEventKind::Press)]);
+        assert_eq!(
+            out,
+            vec![key(Key::Function(1), Mods::EMPTY, KeyEventKind::Press)]
+        );
     }
 
     #[test]

@@ -26,12 +26,8 @@ impl ChildExt for Child {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OsCommandSpec {
-    Exec {
-        argv: Vec<OsString>,
-    },
-    Shell {
-        command: OsString,
-    },
+    Exec { argv: Vec<OsString> },
+    Shell { command: OsString },
 }
 
 impl OsCommandSpec {
@@ -54,9 +50,7 @@ pub struct ChildEnv {
 
 impl Default for ChildEnv {
     fn default() -> Self {
-        Self {
-            vars: Vec::new(),
-        }
+        Self { vars: Vec::new() }
     }
 }
 
@@ -138,7 +132,10 @@ pub fn spawn(spec: &OsCommandSpec, opts: &ChildSpawnOptions) -> Result<Child, Ch
     Ok(cmd.spawn()?)
 }
 
-pub fn spawn_pty_attached(spec: &OsCommandSpec, opts: &PtyChildSpawnOptions) -> Result<PtyChild, ChildError> {
+pub fn spawn_pty_attached(
+    spec: &OsCommandSpec,
+    opts: &PtyChildSpawnOptions,
+) -> Result<PtyChild, ChildError> {
     let pair = open_pty_pair()?;
     if let Some(ws) = opts.window_size {
         set_winsize(&pair.slave, &ws)?;
@@ -160,7 +157,10 @@ pub fn spawn_pty_attached(spec: &OsCommandSpec, opts: &PtyChildSpawnOptions) -> 
     }
 
     let child = cmd.spawn()?;
-    Ok(PtyChild { pty_master: pair.master, child })
+    Ok(PtyChild {
+        pty_master: pair.master,
+        child,
+    })
 }
 
 fn make_command(spec: &OsCommandSpec) -> Result<Command, ChildError> {

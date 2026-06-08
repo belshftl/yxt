@@ -34,8 +34,15 @@ impl Options {
             "partial_utf8_timeout" => self.partial_utf8_timeout_ms = expect_int(value, span)?,
             "partial_esc_timeout" => self.partial_esc_timeout_ms = expect_int(value, span)?,
             "partial_st_timeout" => self.partial_st_timeout_ms = expect_int(value, span)?,
-            "max_pending_decoder_bytes" => self.max_pending_decoder_bytes = expect_int(value, span)?,
-            _ => return Err(ConfigError { kind: ErrorKind::UnknownOption { name }, span }),
+            "max_pending_decoder_bytes" => {
+                self.max_pending_decoder_bytes = expect_int(value, span)?
+            }
+            _ => {
+                return Err(ConfigError {
+                    kind: ErrorKind::UnknownOption { name },
+                    span,
+                });
+            }
         }
         Ok(())
     }
