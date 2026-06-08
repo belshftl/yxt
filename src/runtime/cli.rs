@@ -122,9 +122,12 @@ fn implicit_config_path(basename: &OsStr) -> PathBuf {
 }
 
 fn refuse_implicit_config() -> bool {
-    let ruid = unsafe { libc::getuid() };
-    let euid = unsafe { libc::geteuid() };
-    let rgid = unsafe { libc::getgid() };
-    let egid = unsafe { libc::getegid() };
-    ruid == 0 || euid == 0 || ruid != euid || rgid != egid
+    // SAFETY: all four calls take no inputs and have no rust-side safety requirements
+    unsafe {
+        let ruid = libc::getuid();
+        let euid = libc::geteuid();
+        let rgid = libc::getgid();
+        let egid = libc::getegid();
+        ruid == 0 || euid == 0 || ruid != euid || rgid != egid
+    }
 }

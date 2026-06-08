@@ -13,10 +13,15 @@ impl<'a> NonblockingFd<'a> {
     pub fn new(fd: BorrowedFd<'a>) -> std::io::Result<Self> {
         let raw = fd.as_raw_fd();
 
+        // SAFETY: `raw` comes from a valid `BorrowedFd`, so it is a valid open fd for the duration
+        // of this call; `F_GETFL` takes no third argument
         let old_flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
         if old_flags < 0 {
             return Err(std::io::Error::last_os_error());
         }
+
+        // SAFETY: `raw` comes from a valid `BorrowedFd`, so it is a valid open fd for the duration
+        // of this call; the third argument is created from a valid bitmask obtained from `F_GETFL`
         if unsafe { libc::fcntl(raw, libc::F_SETFL, old_flags | libc::O_NONBLOCK) } < 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -34,6 +39,8 @@ impl<'a> NonblockingFd<'a> {
 
         let raw = self.fd.as_raw_fd();
 
+        // SAFETY: `raw` comes from a valid `BorrowedFd`, so it is a valid open fd for the duration
+        // of this call; `F_GETFL` takes no third argument
         let curr = unsafe { libc::fcntl(raw, libc::F_GETFL) };
         if curr < 0 {
             return Err(std::io::Error::last_os_error());
@@ -41,6 +48,9 @@ impl<'a> NonblockingFd<'a> {
 
         // restore only O_NONBLOCK bit
         let flags = (curr & !libc::O_NONBLOCK) | (self.old_flags & libc::O_NONBLOCK);
+
+        // SAFETY: `raw` comes from a valid `BorrowedFd`, so it is a valid open fd for the duration
+        // of this call; `flags` is based on the current status-flag bitmask
         if unsafe { libc::fcntl(raw, libc::F_SETFL, flags) } < 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -100,6 +110,9 @@ pub fn select<'a, K: Copy + Eq>(
         None => std::ptr::null_mut(),
     };
 
+    // SAFETY: `rfds` and `wfds` are initialized `fd_set`s; `tv_ptr` is either null or points to
+    // `tv`, which lives until `select` returns; `fd_set` rejects fds >= `FD_SETSIZE`, and `maxfd`
+    // is `-1` only when no fds are supplied, yielding `nfds == 0`
     if unsafe {
         libc::select(
             maxfd + 1,
@@ -116,12 +129,18 @@ pub fn select<'a, K: Copy + Eq>(
     let mut ready_w = Vec::new();
     for &fd in fds.read.iter() {
         let raw = fd.1.as_raw_fd();
+        // SAFETY: `raw` comes from a valid `BorrowedFd`, so it is a valid open fd for the duration
+        // of this call; it was previously checked by `fd_set()` to fit into `fd_set`, and `rfds` is
+        // an initialized `fd_set` that was passed to a successful `select` call
         if unsafe { libc::FD_ISSET(raw, &rfds) } {
             ready_r.push(fd.0);
         }
     }
     for &fd in fds.write.iter() {
         let raw = fd.1.as_raw_fd();
+        // SAFETY: `raw` comes from a valid `BorrowedFd`, so it is a valid open fd for the duration
+        // of this call; it was previously checked by `fd_set()` to fit into `fd_set`, and `wfds` is
+        // an initialized `fd_set` that was passed to a successful `select` call
         if unsafe { libc::FD_ISSET(raw, &wfds) } {
             ready_w.push(fd.0);
         }
@@ -133,6 +152,8 @@ pub fn select<'a, K: Copy + Eq>(
 }
 
 fn fd_zero() -> libc::fd_set {
+    // SAFETY: `FD_ZERO` fully initializes the `fd_set` pointed to by its argument; after that call,
+    // assuming initialization is valid
     unsafe {
         let mut set = std::mem::MaybeUninit::<libc::fd_set>::uninit();
         libc::FD_ZERO(set.as_mut_ptr());
@@ -150,15 +171,21 @@ where
     let mut maxfd = -1;
     for fd in fds {
         let raw = fd.as_raw_fd();
+        if raw < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("fd {raw} is invalid (negative)"),
+            ));
+        }
         if raw >= libc::FD_SETSIZE as libc::c_int {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("fd {raw} is too large for select(2)"),
             ));
         }
-        unsafe {
-            libc::FD_SET(raw, set);
-        }
+        // SAFETY: `set` points to an initialized `fd_set`; `raw` comes from a valid `BorrowedFd`
+        // and has been checked to be less than `FD_SETSIZE`
+        unsafe { libc::FD_SET(raw, set) };
         maxfd = maxfd.max(raw);
     }
     Ok(maxfd)

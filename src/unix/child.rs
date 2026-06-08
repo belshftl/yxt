@@ -14,6 +14,7 @@ pub trait ChildExt {
 
 impl ChildExt for Child {
     fn signal(&self, sig: libc::c_int) -> std::io::Result<()> {
+        // SAFETY: no pointer inputs, invalid `pid`/`sig` surfaces as a syscall error
         if unsafe { libc::kill(self.id() as libc::pid_t, sig) } < 0 {
             let e = std::io::Error::last_os_error();
             if e.raw_os_error() != Some(libc::ESRCH) {

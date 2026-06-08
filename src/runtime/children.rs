@@ -117,6 +117,7 @@ impl ServiceChild {
 
 fn signal_child(child: &Child, signal: libc::c_int) -> std::io::Result<()> {
     let pid = child.id() as libc::pid_t;
+    // SAFETY: no pointer inputs, invalid `pid`/`signal` surfaces as a syscall error
     if unsafe { libc::kill(pid, signal) } < 0 {
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() == Some(libc::ESRCH) {

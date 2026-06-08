@@ -135,6 +135,8 @@ pub fn read<F: AsRawFd + ?Sized>(fd: &F, buf: &mut [u8]) -> std::io::Result<Read
         return Ok(ReadResult::EmptyInput);
     }
     loop {
+        // SAFETY: `buf.as_mut_ptr()` has `buf.len()` writable bytes as `buf` is a live mutable
+        // slice; an invalid `fd` safely surfaces as a syscall error
         let rv = unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
         if rv < 0 {
             let e = std::io::Error::last_os_error();
@@ -167,6 +169,8 @@ pub fn read_to_queue<F: AsRawFd + ?Sized>(
     }
 
     loop {
+        // SAFETY: `dst.as_mut_ptr()` has `dst.len()` writable bytes as `dst` is a live mutable
+        // slice; an invalid `fd` safely surfaces as a syscall error
         let rv = unsafe { libc::read(fd.as_raw_fd(), dst.as_mut_ptr().cast(), dst.len()) };
         if rv < 0 {
             let e = std::io::Error::last_os_error();
@@ -206,6 +210,8 @@ pub fn drain_from_queue<F: AsRawFd + ?Sized>(
 
     loop {
         let pending = q.pending();
+        // SAFETY: `pending.as_ptr()` has `pending.len()` readable bytes as `pending` is a live
+        // slice; invalid `fd` safely surfaces as a syscall error
         let rv = unsafe { libc::write(fd.as_raw_fd(), pending.as_ptr().cast(), pending.len()) };
         if rv < 0 {
             let e = std::io::Error::last_os_error();

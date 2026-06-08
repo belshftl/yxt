@@ -61,15 +61,20 @@ impl Drop for RawTerminal {
 
 fn tcgetattr_raw(fd: RawFd) -> std::io::Result<termios> {
     let mut termios = MaybeUninit::<termios>::uninit();
+
+    // SAFETY: `termios.as_mut_ptr()` is valid for writes of `termios` and gets initialized by
+    // `tcgetattr` on success; invalid `fd` is reported as a syscall error
     if unsafe { libc::tcgetattr(fd, termios.as_mut_ptr()) } < 0 {
         Err(Error::last_os_error())
     } else {
-        // SAFETY: `termios` must have been initialized by a successful `tcgetattr()`
+        // SAFETY: `termios` has been initialized by a successful `tcgetattr`
         Ok(unsafe { termios.assume_init() })
     }
 }
 
 fn tcsetattr_raw(fd: RawFd, termios: &termios) -> std::io::Result<()> {
+    // SAFETY: `termios` points to a valid initialized `termios` and does not get retained by
+    // `tcsetattr`; invalid `fd` is reported as a syscall error
     if unsafe { libc::tcsetattr(fd, libc::TCSANOW, termios) } < 0 {
         Err(Error::last_os_error())
     } else {
@@ -78,26 +83,35 @@ fn tcsetattr_raw(fd: RawFd, termios: &termios) -> std::io::Result<()> {
 }
 
 pub fn dup_fd<F: AsFd + ?Sized>(fd: &F) -> std::io::Result<OwnedFd> {
+    // SAFETY: `fd.as_fd().as_raw_fd()` is a valid borrowed fd for the duration of this call, `dup`
+    // does not take ownership of it
     let raw = unsafe { libc::dup(fd.as_fd().as_raw_fd()) };
     if raw < 0 {
         Err(Error::last_os_error())
     } else {
-        // SAFETY: `raw` is a valid fd, ownership transfers from `raw` to the returned `OwnedFd`
+        // SAFETY: `raw` is a valid fd returned by `dup` whose ownership now transfers to the
+        // returned `OwnedFd`
         Ok(unsafe { OwnedFd::from_raw_fd(raw) })
     }
 }
 
 pub fn get_winsize<F: AsFd + ?Sized>(fd: &F) -> std::io::Result<winsize> {
     let mut ws = MaybeUninit::<winsize>::uninit();
+
+    // SAFETY: `ws.as_mut_ptr()` is valid for writes of `winsize` and gets initialized by
+    // `ioctl(TIOCGWINSZ)` on success; `fd.as_fd().as_raw_fd()` is a valid borrowed fd for the
+    // duration of this call, the `ioctl` does not take ownership of it
     if unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), libc::TIOCGWINSZ, ws.as_mut_ptr()) } < 0 {
         Err(Error::last_os_error())
     } else {
-        // SAFETY: `ws` must have been initialized by a successful `TIOCGWINSZ` ioctl
+        // SAFETY: `ws` has been initialized by a successful `ioctl(TIOCGWINSZ)`
         Ok(unsafe { ws.assume_init() })
     }
 }
 
 pub fn set_winsize<F: AsFd + ?Sized>(fd: &F, ws: &winsize) -> std::io::Result<()> {
+    // SAFETY: `fd.as_fd().as_raw_fd()` is a valid borrowed fd for the duration of this call; `ws`
+    // points to a valid initialized `winsize` and does not get retained by the `ioctl` call
     if unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), libc::TIOCSWINSZ, ws) } < 0 {
         Err(Error::last_os_error())
     } else {
@@ -105,19 +119,32 @@ pub fn set_winsize<F: AsFd + ?Sized>(fd: &F, ws: &winsize) -> std::io::Result<()
     }
 }
 
-// SAFETY: intended to be called in a pre_exec() closure, so this must be async-signal-safe; since
-// the closure's signature expects `std::io::Result<()>`, it's only safe to assume that
-// constructing one via `last_os_error` / `from_raw_os_error` is safe
+/// Calls `setsid(2)` and switches the controlling terminal to the provided `fd`.
+/// Intended to be called in a `pre_exec()` closure after fork and before exec to attach
+/// the child to the slave side of a PTY.
+///
+/// # Safety
+///
+/// The call may fail after `setsid(2)`, in which case the process will remain in the new
+/// session / process group, so errors must be treated as having potentially mutated process state.
 pub unsafe fn switch_to_ctty(fd: RawFd) -> std::io::Result<()> {
-    // setsid(2) is listed as async-signal-safe in signal-safety(7)
+    // SAFETY remark: there is no formal guarantee or promise that `Error::last_os_error` is
+    // async-signal-safe; however, since the closure's signature expects a return of
+    // `std::io::Result<()>`, we have no choice but to make the assumption that constructing one via
+    // `last_os_error` / `from_raw_os_error` is safe
+
+    // SAFETY: `setsid(2)` is listed as async-signal-safe in `signal-safety(7)`; it takes no inputs
+    // and has no rust-side safety requirements
     if unsafe { libc::setsid() } < 0 {
         return Err(Error::last_os_error());
     }
 
-    // ioctl(TIOCSCTTY) is not POSIX so there's no standard to refer to, but it's likely safe to
-    // assume it's async-signal-safe since it's the standard pty/session setup and the libc
-    // function should typically be a thin wrapper over a syscall
-    if unsafe { libc::ioctl(fd, libc::TIOCSCTTY, 0) } < 0 {
+    // SAFETY: `ioctl(TIOCSCTTY)` is not POSIX so there's no standard to refer to; we assume here
+    // that it is async-signal-safe since it's the standard pty/session setup and the libc function
+    // is typically a small wrapper over a raw syscall. invalid `fd` is reported as a syscall error
+    // additionally, if this call fails, the process will remain `setsid`'d, so callers must treat
+    // errors with caution
+    if unsafe { libc::ioctl(fd, libc::TIOCSCTTY, 0 as libc::c_int) } < 0 {
         return Err(Error::last_os_error());
     }
 
@@ -148,29 +175,59 @@ pub enum PtyOpenError {
 }
 
 pub fn open_pty_pair() -> Result<PtyPair, PtyOpenError> {
+    // SAFETY: `posix_openpt` takes no pointer arguments, called with valid flag bits here
     let master_raw_fd =
         unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
     if master_raw_fd < 0 {
         return Err(PtyOpenError::PosixOpenpt(Error::last_os_error()));
     }
-    // SAFETY: `master_raw_fd` is a valid fd, ownership transfers from `master_raw_fd` to `master`
+
+    // SAFETY: `master_raw_fd` was returned by successful `posix_openpt`, is open, and is not owned
+    // elsewhere; ownership transfers from `master_raw_fd` to `master`
     let master = unsafe { OwnedFd::from_raw_fd(master_raw_fd) };
 
-    if unsafe { libc::grantpt(master_raw_fd) } < 0 {
+    // SAFETY: `master.as_raw_fd()` is a valid fd from a successful `posix_openpt`; `grantpt` does
+    // not take ownership of it
+    if unsafe { libc::grantpt(master.as_raw_fd()) } < 0 {
         return Err(PtyOpenError::Grantpt(Error::last_os_error()));
     }
-    if unsafe { libc::unlockpt(master_raw_fd) } < 0 {
+
+    // SAFETY: `master.as_raw_fd()` is a valid fd from a successful `posix_openpt` + `grantpt`;
+    // `unlockpt` does not take ownership of it
+    if unsafe { libc::unlockpt(master.as_raw_fd()) } < 0 {
         return Err(PtyOpenError::Unlockpt(Error::last_os_error()));
     }
 
-    // SAFETY: ptsname() returns a pointer to static storage, must not have a possibility of racing
-    // with another call (maybe use a process-wide mutex later?)
-    let name_ptr = unsafe { libc::ptsname(master_raw_fd) };
-    if name_ptr.is_null() {
-        return Err(PtyOpenError::Ptsname(Error::last_os_error()));
-    }
-    let name = unsafe { CStr::from_ptr(name_ptr) }.to_owned();
+    // a bit ugly, but `std::cmp::min` is still marked only `const: unstable`
+    // cap at 2048 to prevent large PATH_MAX from allocating a lot on the stack; technically, this
+    // can disallow valid filepaths longer than 2047 characters but, like, come on
+    // realistically it's going to be something like `/dev/pts/N`
+    const BUFSIZE: usize = if (libc::PATH_MAX as usize) < 2048usize {
+        libc::PATH_MAX as usize
+    } else {
+        2048usize
+    };
+    let mut buf = [MaybeUninit::<libc::c_char>::uninit(); BUFSIZE];
 
+    // SAFETY: `buf` is valid for writes of up to `buf.len()` bytes and does not get retained by
+    // `ptsname_r`, and `master.as_raw_fd()` is a valid fd from a successful `posix_openpt` +
+    // `grantpt` + `unlockpt`
+    let rv = unsafe {
+        libc::ptsname_r(
+            master.as_raw_fd(),
+            buf.as_mut_ptr().cast::<libc::c_char>(),
+            buf.len(),
+        )
+    };
+    if rv != 0 {
+        // the usual style here is `< 0` but the manpage says it returns "an error number", not -1
+        return Err(PtyOpenError::Ptsname(Error::from_raw_os_error(rv)));
+    }
+
+    // SAFETY: earlier successful `ptsname_r` wrote a valid C string into `buf`
+    let name = unsafe { CStr::from_ptr(buf.as_ptr().cast::<libc::c_char>()) };
+
+    // SAFETY: `name.as_ptr()` is a valid NUL-terminated pathname returned by `ptsname_r`
     let slave_raw_fd = unsafe {
         libc::open(
             name.as_ptr(),
@@ -180,6 +237,7 @@ pub fn open_pty_pair() -> Result<PtyPair, PtyOpenError> {
     if slave_raw_fd < 0 {
         return Err(PtyOpenError::OpenSlave(Error::last_os_error()));
     }
+
     // SAFETY: `slave_raw_fd` is a valid fd, ownership transfers from `slave_raw_fd` to `slave`
     let slave = unsafe { OwnedFd::from_raw_fd(slave_raw_fd) };
 

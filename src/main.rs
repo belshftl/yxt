@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 #![deny(unsafe_op_in_unsafe_fn)]
+#![deny(clippy::undocumented_unsafe_blocks)]
 
 mod config;
 mod model;
