@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};

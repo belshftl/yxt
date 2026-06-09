@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
 use super::{kitty, legacy, mode::TermMode};

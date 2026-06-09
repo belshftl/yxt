@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
 pub const DEFAULT_MAX_CSI_BYTES: usize = 128;

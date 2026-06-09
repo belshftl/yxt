@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
 #![deny(unsafe_op_in_unsafe_fn)]
