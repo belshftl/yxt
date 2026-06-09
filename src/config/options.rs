@@ -32,13 +32,13 @@ impl Options {
             "log_file" => self.log_file = expect_string(value, span)?,
             "esc_byte_is_partial_esc" => self.esc_byte_is_partial_esc = expect_bool(value, span)?,
             "partial_utf8_timeout" => {
-                self.partial_utf8_timeout_ms = expect_positive_int(name, value, span)?
+                self.partial_utf8_timeout_ms = expect_positive_int(name, value, span)?;
             }
             "partial_esc_timeout" => {
-                self.partial_esc_timeout_ms = expect_positive_int(name, value, span)?
+                self.partial_esc_timeout_ms = expect_positive_int(name, value, span)?;
             }
             "partial_st_timeout" => {
-                self.partial_st_timeout_ms = expect_positive_int(name, value, span)?
+                self.partial_st_timeout_ms = expect_positive_int(name, value, span)?;
             }
             "max_pending_decoder_bytes" => {
                 self.max_pending_decoder_bytes = expect_positive_int(name, value, span)?;
