@@ -95,8 +95,8 @@ impl<K: Copy + Eq> ReadyFds<K> {
     }
 }
 
-pub fn select<'a, K: Copy + Eq>(
-    fds: &SelectFds<'a, K>,
+pub fn select<K: Copy + Eq>(
+    fds: &SelectFds<'_, K>,
     timeout: Option<Duration>,
 ) -> std::io::Result<ReadyFds<K>> {
     let mut rfds = fd_zero();
@@ -106,7 +106,7 @@ pub fn select<'a, K: Copy + Eq>(
 
     let mut tv = timeout.map(duration_to_timeval).transpose()?;
     let tv_ptr = match &mut tv {
-        Some(tv) => tv as *mut libc::timeval,
+        Some(tv) => std::ptr::from_mut::<libc::timeval>(tv),
         None => std::ptr::null_mut(),
     };
 
@@ -116,8 +116,8 @@ pub fn select<'a, K: Copy + Eq>(
     if unsafe {
         libc::select(
             maxfd + 1,
-            &mut rfds,
-            &mut wfds,
+            &raw mut rfds,
+            &raw mut wfds,
             std::ptr::null_mut(),
             tv_ptr,
         )
@@ -127,21 +127,21 @@ pub fn select<'a, K: Copy + Eq>(
     }
     let mut ready_r = Vec::new();
     let mut ready_w = Vec::new();
-    for &fd in fds.read.iter() {
+    for &fd in &fds.read {
         let raw = fd.1.as_raw_fd();
         // SAFETY: `raw` comes from a valid `BorrowedFd`, so it is a valid open fd for the duration
         // of this call; it was previously checked by `fd_set()` to fit into `fd_set`, and `rfds` is
         // an initialized `fd_set` that was passed to a successful `select` call
-        if unsafe { libc::FD_ISSET(raw, &rfds) } {
+        if unsafe { libc::FD_ISSET(raw, &raw const rfds) } {
             ready_r.push(fd.0);
         }
     }
-    for &fd in fds.write.iter() {
+    for &fd in &fds.write {
         let raw = fd.1.as_raw_fd();
         // SAFETY: `raw` comes from a valid `BorrowedFd`, so it is a valid open fd for the duration
         // of this call; it was previously checked by `fd_set()` to fit into `fd_set`, and `wfds` is
         // an initialized `fd_set` that was passed to a successful `select` call
-        if unsafe { libc::FD_ISSET(raw, &wfds) } {
+        if unsafe { libc::FD_ISSET(raw, &raw const wfds) } {
             ready_w.push(fd.0);
         }
     }
@@ -177,7 +177,10 @@ where
                 format!("fd {raw} is invalid (negative)"),
             ));
         }
-        if raw >= libc::FD_SETSIZE as libc::c_int {
+        if raw
+            >= libc::c_int::try_from(libc::FD_SETSIZE)
+                .expect("libc::FD_SETSIZE should fit into a libc::c_int")
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("fd {raw} is too large for select(2)"),
@@ -205,16 +208,14 @@ fn duration_to_timeval(d: Duration) -> std::io::Result<libc::timeval> {
         })?;
     }
 
-    let max = libc::time_t::MAX as u64;
-    if sec > max {
-        return Err(std::io::Error::new(
+    let sec = libc::time_t::try_from(sec).map_err(|_| {
+        std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "duration is too large to represent as timeval(3type)",
-        ));
-    }
-
+        )
+    })?;
     Ok(libc::timeval {
-        tv_sec: sec as libc::time_t,
-        tv_usec: usec as libc::suseconds_t,
+        tv_sec: sec,
+        tv_usec: libc::suseconds_t::from(usec),
     })
 }

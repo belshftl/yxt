@@ -3,7 +3,7 @@
 use super::{kitty, legacy, mode::TermMode};
 use crate::model::Token;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Encoder {
     mode: TermMode,
 }

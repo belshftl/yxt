@@ -78,7 +78,7 @@ pub enum ConfigPathError {
     MissingImplicitConfig { implicit_path: PathBuf },
 }
 
-pub fn config_path<'a>(cli: &'a Cli) -> Result<Cow<'a, Path>, ConfigPathError> {
+pub fn config_path(cli: &Cli) -> Result<Cow<'_, Path>, ConfigPathError> {
     if let Some(path) = &cli.config {
         return Ok(Cow::Borrowed(path));
     }
@@ -111,8 +111,7 @@ fn implicit_config_path(basename: &OsStr) -> PathBuf {
     match std::env::var_os("XDG_CONFIG_HOME") {
         Some(xdg) => PathBuf::from(xdg),
         None => std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
+            .map_or_else(|| PathBuf::from("."), PathBuf::from)
             .join(".config"),
     }
     .join("yxt")

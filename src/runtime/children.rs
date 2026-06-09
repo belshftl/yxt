@@ -116,7 +116,7 @@ impl ServiceChild {
 }
 
 fn signal_child(child: &Child, signal: libc::c_int) -> std::io::Result<()> {
-    let pid = child.id() as libc::pid_t;
+    let pid = libc::pid_t::try_from(child.id()).expect("child PID should fit into libc::pid_t");
     // SAFETY: no pointer inputs, invalid `pid`/`signal` surfaces as a syscall error
     if unsafe { libc::kill(pid, signal) } < 0 {
         let err = std::io::Error::last_os_error();
@@ -214,7 +214,7 @@ pub struct ServiceManager {
 impl ServiceManager {
     pub fn start(
         services: &Vec<Service>,
-        spawn_options: ChildSpawnOptions,
+        spawn_options: &ChildSpawnOptions,
         shutdown_grace: Duration,
     ) -> Result<Self, ServiceError> {
         let mut manager = Self {
@@ -225,7 +225,7 @@ impl ServiceManager {
 
         for sv in services {
             let spec = OsCommandSpec::from_model(&sv.command);
-            match spawn(&spec, &spawn_options) {
+            match spawn(&spec, spawn_options) {
                 Ok(child) => manager
                     .services
                     .push(ServiceChild::new(sv.name.clone(), child)),

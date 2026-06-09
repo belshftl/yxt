@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use super::ast::*;
+use super::ast::{Expr, InfixOp, LineCtx, Literal, MappingAttr, MappingOp, PairSide, Span, Stmt};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ErrorKind {
@@ -674,7 +674,7 @@ impl<'a> Cursor<'a> {
                     }),
                 }
             }
-            Some(b'+') | Some(b'-') | Some(b'0'..=b'9') => {
+            Some(b'+' | b'-' | b'0'..=b'9') => {
                 let start = self.pos;
                 while let Some(b) = self.peek_byte() {
                     if is_expr_delim(b) {
@@ -786,7 +786,7 @@ impl<'a> TopLevelBytes<'a> {
     }
 }
 
-impl<'a> Iterator for TopLevelBytes<'a> {
+impl Iterator for TopLevelBytes<'_> {
     type Item = Result<TopLevelByte, ParseError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -908,7 +908,6 @@ fn scan_line_structure(s: &str, ctx: LineCtx, base: usize) -> Result<LineStructu
                         },
                     });
                 }
-                continue;
             }
             _ => {}
         }
@@ -1191,13 +1190,11 @@ fn parse_i32(s: &str, span: Span) -> Result<i32, ParseError> {
     })?;
 
     let v = if negative { -mag } else { mag };
-    if v < i32::MIN as i64 || v > i32::MAX as i64 {
-        return Err(ParseError {
-            kind: ErrorKind::IntegerOutOfRange,
-            span,
-        });
-    }
-    Ok(v as i32)
+    let v = i32::try_from(v).map_err(|_| ParseError {
+        kind: ErrorKind::IntegerOutOfRange,
+        span,
+    })?;
+    Ok(v)
 }
 
 fn strip_line_ending(s: &str, ctx: LineCtx) -> Result<&str, ParseError> {
@@ -1267,6 +1264,7 @@ fn is_expr_delim(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ast::FileId;
 
     const DUMMY_CTX: LineCtx = LineCtx {
         file: FileId(0),

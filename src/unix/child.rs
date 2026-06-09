@@ -14,8 +14,9 @@ pub trait ChildExt {
 
 impl ChildExt for Child {
     fn signal(&self, sig: libc::c_int) -> std::io::Result<()> {
+        let pid = libc::pid_t::try_from(self.id()).expect("child PID should fit into libc::pid_t");
         // SAFETY: no pointer inputs, invalid `pid`/`sig` surfaces as a syscall error
-        if unsafe { libc::kill(self.id() as libc::pid_t, sig) } < 0 {
+        if unsafe { libc::kill(pid, sig) } < 0 {
             let e = std::io::Error::last_os_error();
             if e.raw_os_error() != Some(libc::ESRCH) {
                 return Err(e);
@@ -123,7 +124,7 @@ pub fn spawn_pty_attached(
 ) -> Result<PtyChild, ChildError> {
     let pair = open_pty_pair()?;
     if let Some(ws) = opts.window_size {
-        set_winsize(&pair.slave, &ws)?;
+        set_winsize(&pair.slave, ws)?;
     }
 
     let slave_raw_fd = pair.slave.as_raw_fd();

@@ -286,6 +286,7 @@ pub enum Payload {
 }
 
 impl Payload {
+    #[allow(clippy::unnecessary_wraps)]
     pub fn token(self) -> Option<TokenPayload> {
         match self {
             Self::Token(payload) => Some(payload),
@@ -341,10 +342,10 @@ impl InheritToken {
                     kind: payload.kind,
                 },
                 KeyPattern::CharPair(pair) => {
-                    let ch = if (payload.logical_mods & Mods::SHIFT) != Mods::EMPTY {
-                        pair.shifted
-                    } else {
+                    let ch = if (payload.logical_mods & Mods::SHIFT) == Mods::EMPTY {
                         pair.unshifted
+                    } else {
+                        pair.shifted
                     };
                     Token::Utf8 {
                         ch,

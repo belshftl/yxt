@@ -7,10 +7,10 @@ use super::lower::{ConfigError, ErrorKind, LiteralKind};
 pub struct Options {
     pub log_file: String,
     pub esc_byte_is_partial_esc: bool,
-    pub partial_utf8_timeout_ms: i32,
-    pub partial_esc_timeout_ms: i32,
-    pub partial_st_timeout_ms: i32,
-    pub max_pending_decoder_bytes: i32,
+    pub partial_utf8_timeout_ms: u64,
+    pub partial_esc_timeout_ms: u64,
+    pub partial_st_timeout_ms: u64,
+    pub max_pending_decoder_bytes: usize,
 }
 
 impl Default for Options {
@@ -31,11 +31,17 @@ impl Options {
         match name.as_str() {
             "log_file" => self.log_file = expect_string(value, span)?,
             "esc_byte_is_partial_esc" => self.esc_byte_is_partial_esc = expect_bool(value, span)?,
-            "partial_utf8_timeout" => self.partial_utf8_timeout_ms = expect_int(value, span)?,
-            "partial_esc_timeout" => self.partial_esc_timeout_ms = expect_int(value, span)?,
-            "partial_st_timeout" => self.partial_st_timeout_ms = expect_int(value, span)?,
+            "partial_utf8_timeout" => {
+                self.partial_utf8_timeout_ms = expect_positive_int(name, value, span)?
+            }
+            "partial_esc_timeout" => {
+                self.partial_esc_timeout_ms = expect_positive_int(name, value, span)?
+            }
+            "partial_st_timeout" => {
+                self.partial_st_timeout_ms = expect_positive_int(name, value, span)?
+            }
             "max_pending_decoder_bytes" => {
-                self.max_pending_decoder_bytes = expect_int(value, span)?
+                self.max_pending_decoder_bytes = expect_positive_int(name, value, span)?;
             }
             _ => {
                 return Err(ConfigError {
@@ -74,9 +80,19 @@ fn expect_bool(value: Literal, span: Span) -> Result<bool, ConfigError> {
     }
 }
 
-fn expect_int(value: Literal, span: Span) -> Result<i32, ConfigError> {
+fn expect_positive_int<T: Copy + TryFrom<i32>>(
+    name: String,
+    value: Literal,
+    span: Span,
+) -> Result<T, ConfigError> {
     match value {
-        Literal::Int(v) => Ok(v),
+        Literal::Int(v) => T::try_from(v).map_err(|_| ConfigError {
+            kind: ErrorKind::BadOptionValue {
+                name,
+                desc: "value must be non-negative",
+            },
+            span,
+        }),
         other => Err(ConfigError {
             kind: ErrorKind::WrongLiteralType {
                 expected: LiteralKind::Int,

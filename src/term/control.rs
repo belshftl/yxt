@@ -279,7 +279,7 @@ pub fn read_u32(buf: &[u8], idx: &mut usize, max: u32) -> Option<u32> {
     let start = *idx;
     let mut value = 0u32;
     while *idx < buf.len() && buf[*idx].is_ascii_digit() {
-        let digit = (buf[*idx] - b'0') as u32;
+        let digit = u32::from(buf[*idx] - b'0');
         value = value.checked_mul(10)?.checked_add(digit)?;
         if value > max {
             return None;

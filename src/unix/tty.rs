@@ -109,9 +109,9 @@ pub fn get_winsize<F: AsFd + ?Sized>(fd: &F) -> std::io::Result<winsize> {
     }
 }
 
-pub fn set_winsize<F: AsFd + ?Sized>(fd: &F, ws: &winsize) -> std::io::Result<()> {
+pub fn set_winsize<F: AsFd + ?Sized>(fd: &F, ws: winsize) -> std::io::Result<()> {
     // SAFETY: `fd.as_fd().as_raw_fd()` is a valid borrowed fd for the duration of this call; `ws`
-    // points to a valid initialized `winsize` and does not get retained by the `ioctl` call
+    // is a valid initialized `winsize` and does not get retained by the `ioctl` call
     if unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), libc::TIOCSWINSZ, ws) } < 0 {
         Err(Error::last_os_error())
     } else {

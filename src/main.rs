@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: MIT
 
 #![deny(unsafe_op_in_unsafe_fn)]
+#![deny(clippy::borrow_as_ptr)]
 #![deny(clippy::undocumented_unsafe_blocks)]
+#![warn(clippy::pedantic)]
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::option_option)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::struct_excessive_bools)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::unreadable_literal)]
 
 mod config;
 mod model;
@@ -91,7 +99,7 @@ const SENSITIVE_CHILD_BASENAMES: &[&str] = &[
     "rsh",
     "ftp",
     "lftp",
-    // unlock/admin shells
+    // unlock
     "cryptsetup",
     "zfs",
 ];
@@ -159,8 +167,7 @@ fn main() {
     let a0_binding = std::env::args_os().next();
     let argv0 = a0_binding
         .as_deref()
-        .map(OsStr::to_string_lossy)
-        .unwrap_or(Cow::Borrowed("yxt"));
+        .map_or(Cow::Borrowed("yxt"), OsStr::to_string_lossy);
     match run(argv0.as_ref()) {
         Ok(rv) => std::process::exit(rv),
         Err(e) => {
@@ -254,7 +261,7 @@ try '--help' for more info
         stderr: ChildStdio::Null,
     };
     let mut actions = ActionManager::new(child_opts.clone());
-    let mut services = ServiceManager::start(&config.services, child_opts.clone(), SHUTDOWN_GRACE)?;
+    let mut services = ServiceManager::start(&config.services, &child_opts, SHUTDOWN_GRACE)?;
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -292,10 +299,10 @@ try '--help' for more info
     let mut decoder = Decoder::new(DecoderConfig {
         mode: TermMode::LEGACY,
         esc_byte_is_partial_esc: config.options.esc_byte_is_partial_esc,
-        partial_utf8_timeout: Duration::from_millis(config.options.partial_utf8_timeout_ms as u64),
-        partial_esc_timeout: Duration::from_millis(config.options.partial_esc_timeout_ms as u64),
-        partial_st_timeout: Duration::from_millis(config.options.partial_st_timeout_ms as u64),
-        max_pending_bytes: 4096, // TODO
+        partial_utf8_timeout: Duration::from_millis(config.options.partial_utf8_timeout_ms),
+        partial_esc_timeout: Duration::from_millis(config.options.partial_esc_timeout_ms),
+        partial_st_timeout: Duration::from_millis(config.options.partial_st_timeout_ms),
+        max_pending_bytes: config.options.max_pending_decoder_bytes,
     });
     let mut encoder = Encoder::new(TermMode::LEGACY);
     let mut tracker = TerminalModeTracker::new();
@@ -537,7 +544,7 @@ try '--help' for more info
                     }
                     libc::SIGWINCH => {
                         let ws = get_winsize(&stdin)?;
-                        set_winsize(&pty_child.pty_master, &ws)?;
+                        set_winsize(&pty_child.pty_master, ws)?;
                         let r = router
                             .fire(RouteInput::Event(&Event::Signal(Signal(libc::SIGWINCH))))?;
                         for effect in r.effects {

@@ -4,7 +4,11 @@ use std::collections::HashSet;
 
 use super::ast::{Expr, InfixOp, Literal, MappingAttr, MappingOp, PairSide, Span, Stmt};
 use super::options::Options;
-use crate::model::*;
+use crate::model::{
+    Action, CharPair, CommandSpec, Config, DefineGroupError, Direction, Event, GroupId, GroupTable,
+    InheritToken, Key, KeyPattern, KeypadKey, Mapping, MappingAttrs, MediaKey, ModifierKey, Mods,
+    ModsPattern, PayloadKind, Service, Signal, Source, Target, Token, TokenPattern,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LoweredCharPair {
@@ -74,6 +78,9 @@ pub enum ErrorKind {
         expected: LiteralKind,
         got: LiteralKind,
     },
+
+    #[error("bad value for option '{name}': {desc}")]
+    BadOptionValue { name: String, desc: &'static str },
 
     #[error("unknown entity '{name}'")]
     UnknownEntity { name: String },
@@ -183,16 +190,16 @@ impl ConfigBuilder {
         }
     }
 
-    pub fn finish(self) -> Result<Config, ConfigError> {
-        Ok(Config {
+    pub fn finish(self) -> Config {
+        Config {
             options: self.options,
             groups: self.groups,
             mappings: self.mappings,
             services: self.services,
-        })
+        }
     }
 
-    pub fn take_finish(&mut self) -> Result<Config, ConfigError> {
+    pub fn take_finish(&mut self) -> Config {
         std::mem::take(self).finish()
     }
 
@@ -257,7 +264,7 @@ impl ConfigBuilder {
             });
         }
 
-        let (call_name, call_args, call_span) = expect_call(expr).map_err(|_| ConfigError {
+        let (call_name, call_args, call_span) = expect_call(expr).map_err(|()| ConfigError {
             kind: ErrorKind::BadDirectiveArgs { kind: "service" },
             span,
         })?;
@@ -283,7 +290,7 @@ impl ConfigBuilder {
     ) -> Result<(), ConfigError> {
         match kind.as_str() {
             "group" => {
-                let name = expect_one_string(args).map_err(|_| ConfigError {
+                let name = expect_one_string(args).map_err(|()| ConfigError {
                     kind: ErrorKind::BadDefinitionArgs { kind: "group" },
                     span,
                 })?;
@@ -345,7 +352,7 @@ impl ConfigBuilder {
 
     fn lower_source(&self, expr: Expr) -> Result<Source, ConfigError> {
         let span = expr.span();
-        let (name, args, call_span) = expect_call(expr).map_err(|_| ConfigError {
+        let (name, args, call_span) = expect_call(expr).map_err(|()| ConfigError {
             kind: ErrorKind::UnknownEntity {
                 name: "<non-call>".to_owned(),
             },
@@ -377,7 +384,7 @@ impl ConfigBuilder {
 
     fn lower_target(&self, expr: Expr) -> Result<Target, ConfigError> {
         let span = expr.span();
-        let (name, args, call_span) = expect_call(expr).map_err(|_| ConfigError {
+        let (name, args, call_span) = expect_call(expr).map_err(|()| ConfigError {
             kind: ErrorKind::UnknownEntity {
                 name: "<non-call>".to_owned(),
             },
@@ -409,7 +416,7 @@ impl ConfigBuilder {
     }
 
     fn lower_group_id(&self, args: Vec<Expr>, span: Span) -> Result<GroupId, ConfigError> {
-        let name = expect_one_string(args).map_err(|_| ConfigError {
+        let name = expect_one_string(args).map_err(|()| ConfigError {
             kind: ErrorKind::BadEntityArgs { kind: "group" },
             span,
         })?;
@@ -464,7 +471,7 @@ fn lower_mapping_attrs(
 }
 
 fn lower_signal_source(args: Vec<Expr>, span: Span) -> Result<Source, ConfigError> {
-    let name = expect_one_string(args).map_err(|_| ConfigError {
+    let name = expect_one_string(args).map_err(|()| ConfigError {
         kind: ErrorKind::BadEntityArgs { kind: "signal" },
         span,
     })?;
@@ -473,7 +480,7 @@ fn lower_signal_source(args: Vec<Expr>, span: Span) -> Result<Source, ConfigErro
 }
 
 fn lower_sockdata_utf8_source(args: Vec<Expr>, span: Span) -> Result<Source, ConfigError> {
-    let s = expect_one_string(args).map_err(|_| ConfigError {
+    let s = expect_one_string(args).map_err(|()| ConfigError {
         kind: ErrorKind::BadEntityArgs {
             kind: "sockdata_utf8",
         },
@@ -573,13 +580,13 @@ fn lower_char_pair_expr(expr: Expr) -> Result<LoweredCharPair, ConfigError> {
             shifted,
             span,
         } => {
-            let Some(unshifted) = literal_char(*unshifted) else {
+            let Some(unshifted) = literal_char(&unshifted) else {
                 return Err(ConfigError {
                     kind: ErrorKind::CharPairKeyNeedsChars,
                     span,
                 });
             };
-            let Some(shifted) = literal_char(*shifted) else {
+            let Some(shifted) = literal_char(&shifted) else {
                 return Err(ConfigError {
                     kind: ErrorKind::CharPairKeyNeedsChars,
                     span,
@@ -591,7 +598,7 @@ fn lower_char_pair_expr(expr: Expr) -> Result<LoweredCharPair, ConfigError> {
             })
         }
         Expr::InferPair { known, side, span } => {
-            let Some(ch) = literal_char(*known) else {
+            let Some(ch) = literal_char(&known) else {
                 return Err(ConfigError {
                     kind: ErrorKind::CharPairKeyNeedsChars,
                     span,
@@ -618,11 +625,11 @@ fn lower_char_pair_expr(expr: Expr) -> Result<LoweredCharPair, ConfigError> {
     }
 }
 
-fn literal_char(expr: Expr) -> Option<char> {
+fn literal_char(expr: &Expr) -> Option<char> {
     if let Expr::Literal {
         value: Literal::Char(ch),
         ..
-    } = expr
+    } = *expr
     {
         Some(ch)
     } else {
@@ -1025,7 +1032,7 @@ fn lower_exec_command(args: Vec<Expr>, span: Span) -> Result<CommandSpec, Config
 }
 
 fn lower_shell_command(args: Vec<Expr>, span: Span) -> Result<CommandSpec, ConfigError> {
-    let command = expect_one_string(args).map_err(|_| ConfigError {
+    let command = expect_one_string(args).map_err(|()| ConfigError {
         kind: ErrorKind::BadCommandArgs { kind: "sh" },
         span,
     })?;
@@ -1255,7 +1262,7 @@ mod tests {
         for stmt in stmts {
             b.apply_stmt(stmt)?;
         }
-        b.finish()
+        Ok(b.finish())
     }
 
     fn err(stmts: Vec<Stmt>) -> ErrorKind {

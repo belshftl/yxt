@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-use crate::model::*;
+use crate::model::{
+    Action, CharPair, Config, Event, GroupId, KeyEventKind, KeyPattern, MappingAttrs, Mods,
+    ModsPattern, Payload, PayloadKind, Source, Target, Token, TokenPattern, TokenPayload,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub enum RouteInput<'a> {
@@ -210,8 +213,7 @@ fn char_pair_logical_mods(pair: CharPair, ch: char, actual_mods: Mods) -> Option
 
 fn fires_non_token_target(payload: Option<Payload>) -> bool {
     match payload.and_then(Payload::token).map(|p| p.kind) {
-        None => true,
-        Some(KeyEventKind::Press | KeyEventKind::Repeat) => true,
+        None | Some(KeyEventKind::Press | KeyEventKind::Repeat) => true,
         Some(KeyEventKind::Release) => false,
     }
 }

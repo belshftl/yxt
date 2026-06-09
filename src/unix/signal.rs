@@ -64,7 +64,7 @@ impl SignalRegistry {
                 let byte = 0u8;
                 _ = libc::write(
                     write_raw_fd,
-                    &byte as *const _ as *const _,
+                    (&raw const byte).cast(),
                     core::mem::size_of_val(&byte),
                 );
             })
@@ -91,9 +91,9 @@ impl SignalRegistry {
         loop {
             match self.read.read(&mut buf) {
                 Ok(0) => return Ok(()),
-                Ok(_) => continue,
+                Ok(_) => {}
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
                 Err(err) => return Err(err),
             }
         }

@@ -131,9 +131,7 @@ impl ConfigLoader {
         if self.version.is_none() {
             return Err(ConfigLoadError::MissingVersion { path });
         }
-        self.builder
-            .take_finish()
-            .map_err(ConfigLoadError::Semantic)
+        Ok(self.builder.take_finish())
     }
 
     pub fn report_err(&self, err: ConfigLoadError) {
@@ -146,7 +144,7 @@ impl ConfigLoader {
             | ConfigLoadError::BadIncludeArgs { span } => self.report_err_span(&err, span),
             ConfigLoadError::Syntax(ParseError { kind, span }) => self.report_err_span(&kind, span),
             ConfigLoadError::Semantic(ConfigError { kind, span }) => {
-                self.report_err_span(&kind, span)
+                self.report_err_span(&kind, span);
             }
             ConfigLoadError::MissingVersion { path } => {
                 let term = std::io::stderr().is_terminal();
@@ -184,12 +182,11 @@ impl ConfigLoader {
         }
 
         let line = self.sources.line(span.ctx).unwrap();
-        if span.end < span.start || span.start > line.len() {
-            panic!(
-                "invalid diagnostic span: {span:?} for line length {}",
-                line.len()
-            );
-        }
+        assert!(
+            !(span.end < span.start || span.start > line.len()),
+            "invalid diagnostic span: {span:?} for line length {}",
+            line.len()
+        );
         let display_line = tab_expand(line, TAB_WIDTH);
         let start_col = display_col_of(line, span.start, TAB_WIDTH);
         let end_col = display_col_of(line, span.end, TAB_WIDTH);

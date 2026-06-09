@@ -313,7 +313,7 @@ fn decode_alt_prefixed(buf: &[u8], mode: TermMode) -> DecodeOne {
             item: Decoded::Unknown(_),
             consumed,
         } => DecodeOne::Emit {
-            item: Decoded::Unknown(buf[..consumed + 1].to_vec()),
+            item: Decoded::Unknown(buf[..=consumed].to_vec()),
             consumed: consumed + 1,
         },
         DecodeOne::NeedMore(need) => DecodeOne::NeedMore(need),

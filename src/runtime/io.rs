@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+use std::cmp::Ordering;
 use std::os::fd::AsRawFd;
 
 #[derive(Debug)]
@@ -138,19 +139,18 @@ pub fn read<F: AsRawFd + ?Sized>(fd: &F, buf: &mut [u8]) -> std::io::Result<Read
         // SAFETY: `buf.as_mut_ptr()` has `buf.len()` writable bytes as `buf` is a live mutable
         // slice; an invalid `fd` safely surfaces as a syscall error
         let rv = unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
-        if rv < 0 {
-            let e = std::io::Error::last_os_error();
-            match e.kind() {
-                std::io::ErrorKind::Interrupted => continue,
-                std::io::ErrorKind::WouldBlock => return Ok(ReadResult::WouldBlock),
-                _ => return Err(e),
+        match rv.cmp(&0) {
+            Ordering::Less => {
+                let e = std::io::Error::last_os_error();
+                match e.kind() {
+                    std::io::ErrorKind::Interrupted => {}
+                    std::io::ErrorKind::WouldBlock => return Ok(ReadResult::WouldBlock),
+                    _ => return Err(e),
+                }
             }
-        } else if rv == 0 {
-            return Ok(ReadResult::Eof);
-        } else if rv > 0 {
-            return Ok(ReadResult::Success(rv as usize));
+            Ordering::Equal => return Ok(ReadResult::Eof),
+            Ordering::Greater => return Ok(ReadResult::Success(rv.cast_unsigned())),
         }
-        unreachable!();
     }
 }
 
@@ -172,21 +172,22 @@ pub fn read_to_queue<F: AsRawFd + ?Sized>(
         // SAFETY: `dst.as_mut_ptr()` has `dst.len()` writable bytes as `dst` is a live mutable
         // slice; an invalid `fd` safely surfaces as a syscall error
         let rv = unsafe { libc::read(fd.as_raw_fd(), dst.as_mut_ptr().cast(), dst.len()) };
-        if rv < 0 {
-            let e = std::io::Error::last_os_error();
-            match e.kind() {
-                std::io::ErrorKind::Interrupted => continue,
-                std::io::ErrorKind::WouldBlock => return Ok(ReadToQueueResult::WouldBlock),
-                _ => return Err(e),
+        match rv.cmp(&0) {
+            Ordering::Less => {
+                let e = std::io::Error::last_os_error();
+                match e.kind() {
+                    std::io::ErrorKind::Interrupted => {}
+                    std::io::ErrorKind::WouldBlock => return Ok(ReadToQueueResult::WouldBlock),
+                    _ => return Err(e),
+                }
             }
-        } else if rv == 0 {
-            return Ok(ReadToQueueResult::Eof);
-        } else if rv > 0 {
-            let len = rv as usize;
-            q.commit(len);
-            return Ok(ReadToQueueResult::Success { offset, len });
+            Ordering::Equal => return Ok(ReadToQueueResult::Eof),
+            Ordering::Greater => {
+                let len = rv.cast_unsigned();
+                q.commit(len);
+                return Ok(ReadToQueueResult::Success { offset, len });
+            }
         }
-        unreachable!();
     }
 }
 
@@ -213,21 +214,22 @@ pub fn drain_from_queue<F: AsRawFd + ?Sized>(
         // SAFETY: `pending.as_ptr()` has `pending.len()` readable bytes as `pending` is a live
         // slice; invalid `fd` safely surfaces as a syscall error
         let rv = unsafe { libc::write(fd.as_raw_fd(), pending.as_ptr().cast(), pending.len()) };
-        if rv < 0 {
-            let e = std::io::Error::last_os_error();
-            match e.kind() {
-                std::io::ErrorKind::Interrupted => continue,
-                std::io::ErrorKind::WouldBlock => return Ok(WriteResult::WouldBlock),
-                _ => return Err(e),
+        match rv.cmp(&0) {
+            Ordering::Less => {
+                let e = std::io::Error::last_os_error();
+                match e.kind() {
+                    std::io::ErrorKind::Interrupted => {}
+                    std::io::ErrorKind::WouldBlock => return Ok(WriteResult::WouldBlock),
+                    _ => return Err(e),
+                }
             }
-        } else if rv == 0 {
-            return Err(std::io::Error::from(std::io::ErrorKind::WriteZero));
-        } else if rv > 0 {
-            let n = rv as usize;
-            q.consume(n);
-            return Ok(WriteResult::Success(n));
+            Ordering::Equal => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero)),
+            Ordering::Greater => {
+                let n = rv.cast_unsigned();
+                q.consume(n);
+                return Ok(WriteResult::Success(n));
+            }
         }
-        unreachable!();
     }
 }
 
@@ -246,6 +248,6 @@ pub fn drain_to_pty_from_queue<F: AsRawFd + ?Sized>(
 }
 
 fn is_pty_hangup(e: &std::io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(libc::EIO) | Some(libc::EPIPE))
+    matches!(e.raw_os_error(), Some(libc::EIO | libc::EPIPE))
         || e.kind() == std::io::ErrorKind::WriteZero
 }

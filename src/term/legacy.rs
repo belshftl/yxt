@@ -213,9 +213,7 @@ fn encode_utf8(ch: char, mods: Mods) -> Option<Vec<u8>> {
 }
 
 fn encode_key(key: Key, mods: Mods, mode: TermMode) -> Option<Vec<u8>> {
-    let param = if (mods & !(Mods::SHIFT | Mods::ALT | Mods::CTRL | Mods::META)) != Mods::EMPTY {
-        return None;
-    } else {
+    let param = if (mods & !(Mods::SHIFT | Mods::ALT | Mods::CTRL | Mods::META)) == Mods::EMPTY {
         let mut param = 1u8;
         if (mods & Mods::SHIFT) != Mods::EMPTY {
             param += 1;
@@ -230,6 +228,8 @@ fn encode_key(key: Key, mods: Mods, mode: TermMode) -> Option<Vec<u8>> {
             param += 8;
         }
         param
+    } else {
+        return None;
     };
 
     match key {
@@ -243,10 +243,10 @@ fn encode_key(key: Key, mods: Mods, mode: TermMode) -> Option<Vec<u8>> {
         Key::Keypad(kp) if mode.deckpam => encode_deckpam(kp, param),
 
         // vt-style sequences (CSI N ~)
-        Key::Insert => encode_vt(2, param),
-        Key::Delete => encode_vt(3, param),
-        Key::PageUp => encode_vt(5, param),
-        Key::PageDown => encode_vt(6, param),
+        Key::Insert => Some(encode_vt(2, param)),
+        Key::Delete => Some(encode_vt(3, param)),
+        Key::PageUp => Some(encode_vt(5, param)),
+        Key::PageDown => Some(encode_vt(6, param)),
         Key::Function(n @ 1..=12) => {
             let id = match n {
                 1 => 11,
@@ -263,7 +263,7 @@ fn encode_key(key: Key, mods: Mods, mode: TermMode) -> Option<Vec<u8>> {
                 12 => 24,
                 _ => unreachable!(),
             };
-            encode_vt(id, param)
+            Some(encode_vt(id, param))
         }
 
         // cursor keys, either xterm-style (CSI <X>) or DECCKM (SS3 <X>)
@@ -274,74 +274,71 @@ fn encode_key(key: Key, mods: Mods, mode: TermMode) -> Option<Vec<u8>> {
                 Direction::Up => b'A',
                 Direction::Down => b'B',
             };
-            encode_cursor(final_byte, param, mode)
+            Some(encode_cursor(final_byte, param, mode))
         }
-        Key::Home => encode_cursor(b'H', param, mode),
-        Key::End => encode_cursor(b'F', param, mode),
+        Key::Home => Some(encode_cursor(b'H', param, mode)),
+        Key::End => Some(encode_cursor(b'F', param, mode)),
 
         _ => None,
     }
 }
 
 fn encode_deckpam(kp: KeypadKey, param: u8) -> Option<Vec<u8>> {
-    match kp {
-        KeypadKey::Begin => {
-            if param == 1 {
-                Some(b"\x1b[E".to_vec())
-            } else {
-                Some(format!("\x1b[1;{param}E").into_bytes())
-            }
+    if kp == KeypadKey::Begin {
+        if param == 1 {
+            Some(b"\x1b[E".to_vec())
+        } else {
+            Some(format!("\x1b[1;{param}E").into_bytes())
         }
-        _ => {
-            if param != 1 {
-                return None;
-            }
-
-            let b = match kp {
-                KeypadKey::Digit(0) => b'p',
-                KeypadKey::Digit(1) => b'q',
-                KeypadKey::Digit(2) => b'r',
-                KeypadKey::Digit(3) => b's',
-                KeypadKey::Digit(4) => b't',
-                KeypadKey::Digit(5) => b'u',
-                KeypadKey::Digit(6) => b'v',
-                KeypadKey::Digit(7) => b'w',
-                KeypadKey::Digit(8) => b'x',
-                KeypadKey::Digit(9) => b'y',
-
-                KeypadKey::Decimal => b'n',
-                KeypadKey::Divide => b'o',
-                KeypadKey::Multiply => b'j',
-                KeypadKey::Subtract => b'm',
-                KeypadKey::Add => b'k',
-                KeypadKey::Enter => b'M',
-                KeypadKey::Equal => b'X',
-                KeypadKey::Separator => b'l',
-
-                _ => return None,
-            };
-            Some(vec![0x1b, b'O', b])
-        }
-    }
-}
-
-fn encode_vt(id: u8, param: u8) -> Option<Vec<u8>> {
-    if param == 1 {
-        Some(format!("\x1b[{id}~").into_bytes())
     } else {
-        Some(format!("\x1b[{id};{param}~").into_bytes())
+        if param != 1 {
+            return None;
+        }
+
+        let b = match kp {
+            KeypadKey::Digit(0) => b'p',
+            KeypadKey::Digit(1) => b'q',
+            KeypadKey::Digit(2) => b'r',
+            KeypadKey::Digit(3) => b's',
+            KeypadKey::Digit(4) => b't',
+            KeypadKey::Digit(5) => b'u',
+            KeypadKey::Digit(6) => b'v',
+            KeypadKey::Digit(7) => b'w',
+            KeypadKey::Digit(8) => b'x',
+            KeypadKey::Digit(9) => b'y',
+
+            KeypadKey::Decimal => b'n',
+            KeypadKey::Divide => b'o',
+            KeypadKey::Multiply => b'j',
+            KeypadKey::Subtract => b'm',
+            KeypadKey::Add => b'k',
+            KeypadKey::Enter => b'M',
+            KeypadKey::Equal => b'X',
+            KeypadKey::Separator => b'l',
+
+            _ => return None,
+        };
+        Some(vec![0x1b, b'O', b])
     }
 }
 
-fn encode_cursor(final_byte: u8, param: u8, mode: TermMode) -> Option<Vec<u8>> {
+fn encode_vt(id: u8, param: u8) -> Vec<u8> {
+    if param == 1 {
+        format!("\x1b[{id}~").into_bytes()
+    } else {
+        format!("\x1b[{id};{param}~").into_bytes()
+    }
+}
+
+fn encode_cursor(final_byte: u8, param: u8, mode: TermMode) -> Vec<u8> {
     if param == 1 {
         if mode.decckm {
-            Some(vec![0x1b, b'O', final_byte])
+            vec![0x1b, b'O', final_byte]
         } else {
-            Some(vec![0x1b, b'[', final_byte])
+            vec![0x1b, b'[', final_byte]
         }
     } else {
-        Some(format!("\x1b[1;{}{}", param, final_byte as char).into_bytes())
+        format!("\x1b[1;{}{}", param, final_byte as char).into_bytes()
     }
 }
 

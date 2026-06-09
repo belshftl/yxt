@@ -58,10 +58,10 @@ pub fn decode_csi_u_params(params: &[u8]) -> Option<Vec<Token>> {
     }
     skip_ws(params, &mut idx);
 
-    if idx != params.len() {
-        None
-    } else {
+    if idx == params.len() {
         Some(vec![token_from_codepoint(code, mods, kind)])
+    } else {
+        None
     }
 }
 
@@ -73,9 +73,9 @@ fn skip_ws(buf: &[u8], idx: &mut usize) {
 
 fn parse_mods_and_type(body: &[u8], idx: &mut usize) -> Option<(Mods, KeyEventKind)> {
     // this is also a bitfield with 1 added
-    let m = read_u32(body, idx, u8::MAX as u32 + 1)?;
+    let m = read_u32(body, idx, u32::from(u8::MAX) + 1)?;
     let mods = if m > 0 {
-        let bits = (m - 1) & !(Mods::KITTY_IGNORED_LOCK_BITS as u32);
+        let bits = (m - 1) & !u32::from(Mods::KITTY_IGNORED_LOCK_BITS);
         if bits & !0b111111 != 0 {
             return None; // malformed input
         }
@@ -180,7 +180,10 @@ fn key_from_kitty_codepoint(code: u32) -> Option<Key> {
     }
 
     if (57376..=57398).contains(&code) {
-        return Some(Key::Function((13 + (code - 57376)) as u8));
+        let Ok(n) = u8::try_from(13 + (code - 57376)) else {
+            unreachable!()
+        };
+        return Some(Key::Function(n));
     }
 
     if (57399..=57408).contains(&code) {
@@ -324,7 +327,7 @@ fn key_to_kitty_codepoint(key: Key) -> Option<u32> {
         Key::Pause => Some(57362),
         Key::Menu => Some(57363),
 
-        Key::Function(n @ 13..=35) => Some(57376 + (n as u32 - 13)),
+        Key::Function(n @ 13..=35) => Some(57376 + (u32::from(n) - 13)),
 
         Key::Keypad(KeypadKey::Left) => Some(57399),
         Key::Keypad(KeypadKey::Right) => Some(57400),
@@ -338,8 +341,8 @@ fn key_to_kitty_codepoint(key: Key) -> Option<u32> {
         Key::Keypad(KeypadKey::Delete) => Some(57408),
         Key::Keypad(KeypadKey::Begin) => Some(57427),
 
-        Key::Media(media) => media_to_kitty_codepoint(media),
-        Key::ModifierKey(modkey) => modifier_to_kitty_codepoint(modkey),
+        Key::Media(media) => Some(media_to_kitty_codepoint(media)),
+        Key::ModifierKey(modkey) => Some(modifier_to_kitty_codepoint(modkey)),
 
         Key::IsoLevel3Shift => Some(57453),
         Key::IsoLevel5Shift => Some(57454),
@@ -348,7 +351,7 @@ fn key_to_kitty_codepoint(key: Key) -> Option<u32> {
     }
 }
 
-fn media_to_kitty_codepoint(media: MediaKey) -> Option<u32> {
+fn media_to_kitty_codepoint(media: MediaKey) -> u32 {
     let offset = match media {
         MediaKey::Play => 0,
         MediaKey::Pause => 1,
@@ -364,10 +367,10 @@ fn media_to_kitty_codepoint(media: MediaKey) -> Option<u32> {
         MediaKey::RaiseVolume => 11,
         MediaKey::MuteVolume => 12,
     };
-    Some(57428 + offset)
+    57428 + offset
 }
 
-fn modifier_to_kitty_codepoint(modkey: ModifierKey) -> Option<u32> {
+fn modifier_to_kitty_codepoint(modkey: ModifierKey) -> u32 {
     let offset = match modkey {
         ModifierKey::LeftShift => 13,
         ModifierKey::LeftCtrl => 14,
@@ -383,7 +386,7 @@ fn modifier_to_kitty_codepoint(modkey: ModifierKey) -> Option<u32> {
         ModifierKey::RightHyper => 23,
         ModifierKey::RightMeta => 24,
     };
-    Some(57428 + offset)
+    57428 + offset
 }
 
 #[cfg(test)]

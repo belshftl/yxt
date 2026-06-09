@@ -43,12 +43,11 @@ impl KittyState {
 
     fn pop(&mut self, count: u32) {
         for _ in 0..count {
-            match self.stack.pop() {
-                Some(flags) => self.flags = flags,
-                None => {
-                    self.flags = 0;
-                    break;
-                }
+            if let Some(flags) = self.stack.pop() {
+                self.flags = flags;
+            } else {
+                self.flags = 0;
+                break;
             }
         }
     }
