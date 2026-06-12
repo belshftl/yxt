@@ -1383,13 +1383,10 @@ mod tests {
 
     #[test]
     fn ws_or_comment_only_parse_as_none() {
-        assert!(matches!(parse_line("", DUMMY_CTX).unwrap(), None));
-        assert!(matches!(parse_line("   \t  ", DUMMY_CTX).unwrap(), None));
-        assert!(matches!(parse_line("# comment", DUMMY_CTX).unwrap(), None));
-        assert!(matches!(
-            parse_line("   # comment", DUMMY_CTX).unwrap(),
-            None
-        ));
+        assert!(parse_line("", DUMMY_CTX).unwrap().is_none());
+        assert!(parse_line("   \t  ", DUMMY_CTX).unwrap().is_none());
+        assert!(parse_line("# comment", DUMMY_CTX).unwrap().is_none());
+        assert!(parse_line("   # comment", DUMMY_CTX).unwrap().is_none());
     }
 
     #[test]
@@ -1418,7 +1415,7 @@ mod tests {
         let (_, value) = opt("x = '#' # comment", DUMMY_CTX);
         assert_eq!(value, Literal::Char('#'));
 
-        let (_, value) = opt(r#"x = 123 # comment"#, DUMMY_CTX);
+        let (_, value) = opt(r"x = 123 # comment", DUMMY_CTX);
         assert_eq!(value, Literal::Int(123));
     }
 
@@ -1526,7 +1523,7 @@ mod tests {
 
     #[test]
     fn parses_directive() {
-        let (name, args) = directive(r#"@version 1"#, DUMMY_CTX);
+        let (name, args) = directive(r"@version 1", DUMMY_CTX);
         assert_eq!(name, "version");
         assert_eq!(args.len(), 1);
         assert_eq!(lit(&args[0]), &Literal::Int(1));
@@ -1624,7 +1621,7 @@ mod tests {
 
     #[test]
     fn parses_call_args() {
-        let (_, lhs, _, _) = mapping(r#"key(up, ctrl) => send_utf8('x')"#, DUMMY_CTX);
+        let (_, lhs, _, _) = mapping(r"key(up, ctrl) => send_utf8('x')", DUMMY_CTX);
         assert_eq!(call_name(&lhs), "key");
         let args = call_args(&lhs);
 
@@ -1856,10 +1853,10 @@ mod tests {
 
     #[test]
     fn rejects_trailing_input_after_literal() {
-        assert!(parse_line(r#"x = true false"#, DUMMY_CTX).is_err());
+        assert!(parse_line(r"x = true false", DUMMY_CTX).is_err());
         assert!(parse_line(r#"x = "a" "b""#, DUMMY_CTX).is_err());
-        assert!(parse_line(r#"x = 1 2"#, DUMMY_CTX).is_err());
-        assert!(parse_line(r#"x = 'a' 'b'"#, DUMMY_CTX).is_err());
+        assert!(parse_line(r"x = 1 2", DUMMY_CTX).is_err());
+        assert!(parse_line(r"x = 'a' 'b'", DUMMY_CTX).is_err());
     }
 
     #[test]
@@ -1871,7 +1868,7 @@ mod tests {
 
     #[test]
     fn parses_expr_idents_and_literals_in_directives() {
-        let (name, args) = directive(r#"@protocol want kitty true 123 'x'"#, DUMMY_CTX);
+        let (name, args) = directive(r"@protocol want kitty true 123 'x'", DUMMY_CTX);
         assert_eq!(name, "protocol");
         assert_eq!(args.len(), 5);
         assert_eq!(ident_name(&args[0]), "want");

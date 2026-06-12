@@ -428,9 +428,9 @@ mod tests {
         let root = write_file(
             &dir,
             "root.conf",
-            r#"
+            r"
 # comment
-"#,
+",
         );
 
         let err = parse_err(&root);
@@ -458,13 +458,13 @@ define group "x"
         let root = write_file(
             &dir,
             "root.conf",
-            r#"
+            r"
 # comment
     # comment with leading whitespace
 @version 1
 
 key(f1) => send_key('x')
-"#,
+",
         );
 
         let cfg = parse(&root).unwrap();
@@ -493,10 +493,10 @@ define group "x"
         let root = write_file(
             &dir,
             "root.conf",
-            r#"
+            r"
 key(f1) => send_key('x')
 @version 1
-"#,
+",
         );
 
         let err = parse_err(&root);
@@ -509,9 +509,9 @@ key(f1) => send_key('x')
         write_file(
             &dir,
             "inc.conf",
-            r#"
+            r"
 key(f1) => send_key('x')
-"#,
+",
         );
         let root = write_file(
             &dir,
@@ -532,10 +532,10 @@ key(f1) => send_key('x')
         let root = write_file(
             &dir,
             "root.conf",
-            r#"
+            r"
 @version 1
 @version 1
-"#,
+",
         );
 
         let err = parse_err(&root);
@@ -548,9 +548,9 @@ key(f1) => send_key('x')
         let root = write_file(
             &dir,
             "root.conf",
-            r#"
+            r"
 @version 2
-"#,
+",
         );
 
         let err = parse_err(&root);
@@ -563,10 +563,10 @@ key(f1) => send_key('x')
     #[test]
     fn bad_root_version_args_are_errors() {
         for (idx, text) in [
-            r#"@version"#,
+            r"@version",
             r#"@version "1""#,
-            r#"@version 1 2"#,
-            r#"@version -1"#,
+            r"@version 1 2",
+            r"@version -1",
         ]
         .into_iter()
         .enumerate()
@@ -691,9 +691,9 @@ key(f1) => group("nested")
         write_file(
             &dir,
             "inc.conf",
-            r#"
+            r"
 key(f1) => send_key('x')
-"#,
+",
         );
         let root = write_file(
             &dir,
@@ -714,10 +714,10 @@ key(f1) => send_key('x')
         write_file(
             &dir,
             "inc.conf",
-            r#"
+            r"
 @version 1
 key(f1) => send_key('x')
-"#,
+",
         );
         let root = write_file(
             &dir,
@@ -738,10 +738,10 @@ key(f1) => send_key('x')
         write_file(
             &dir,
             "inc.conf",
-            r#"
+            r"
 @version 2
 key(f1) => send_key('x')
-"#,
+",
         );
         let root = write_file(
             &dir,
@@ -769,10 +769,10 @@ key(f1) => send_key('x')
         write_file(
             &dir,
             "inc.conf",
-            r#"
+            r"
 key(f1) => send_key('x')
 @version 1
-"#,
+",
         );
         let root = write_file(
             &dir,
@@ -790,14 +790,14 @@ key(f1) => send_key('x')
     #[test]
     fn bad_include_args_are_error() {
         for (idx, text) in [
-            r#"
+            r"
 @version 1
 @include
-"#,
-            r#"
+",
+            r"
 @version 1
 @include 123
-"#,
+",
             r#"
 @version 1
 @include "a" "b"
@@ -925,16 +925,16 @@ define group "x"
         write_file(
             &dir,
             "common-a.conf",
-            r#"
+            r"
 key(f1) => send_key('a')
-"#,
+",
         );
         write_file(
             &dir,
             "common-b.conf",
-            r#"
+            r"
 key(f2) => send_key('b')
-"#,
+",
         );
         write_file(
             &dir,
@@ -970,10 +970,10 @@ key(f2) => send_key('b')
         let root = write_file(
             &dir,
             "root.conf",
-            r#"
+            r"
 @version 1
 key(f1) => send_key('x') => send_key('y')
-"#,
+",
         );
 
         let err = parse_err(&root);
@@ -986,9 +986,9 @@ key(f1) => send_key('x') => send_key('y')
         write_file(
             &dir,
             "bad.conf",
-            r#"
+            r"
 key(f1) => send_key('x') => send_key('y')
-"#,
+",
         );
         let root = write_file(
             &dir,
@@ -1009,11 +1009,11 @@ key(f1) => send_key('x') => send_key('y')
         write_file(
             &dir,
             "bad.conf",
-            r#"
+            r"
 # line 1
 # line 2
 key(nope) => send_key('x')
-"#,
+",
         );
         let root = write_file(
             &dir,
@@ -1043,9 +1043,9 @@ key(nope) => send_key('x')
         write_file(
             &dir,
             "a#b.conf",
-            r#"
+            r"
 key(f1) => send_key('x')
-"#,
+",
         );
         let root = write_file(
             &dir,
@@ -1066,9 +1066,9 @@ key(f1) => send_key('x')
         let inc = write_file(
             &dir,
             "inc.conf",
-            r#"
+            r"
 key(f1) => send_key('x')
-"#,
+",
         );
         let root = write_file(
             &dir,

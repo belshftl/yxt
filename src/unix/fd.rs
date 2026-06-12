@@ -199,7 +199,7 @@ fn duration_to_timeval(d: Duration) -> std::io::Result<libc::timeval> {
     let mut sec = d.as_secs();
     let mut usec = d.subsec_nanos().div_ceil(1000);
 
-    if usec == 1000000 {
+    if usec == 1_000_000 {
         usec = 0;
         sec = sec.checked_add(1).ok_or_else(|| {
             std::io::Error::new(

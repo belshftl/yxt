@@ -223,13 +223,13 @@ mod tests {
         let mut tracker = TerminalModeTracker::new();
 
         assert!(tracker.observe_child_output(b"\x1b="));
-        assert_eq!(tracker.mode().deckpam, true);
+        assert!(tracker.mode().deckpam);
 
         assert!(!tracker.observe_child_output(b"x"));
-        assert_eq!(tracker.mode().deckpam, true);
+        assert!(tracker.mode().deckpam);
 
         assert!(tracker.observe_child_output(b"\x1b>"));
-        assert_eq!(tracker.mode().deckpam, false);
+        assert!(!tracker.mode().deckpam);
     }
 
     #[test]
@@ -237,10 +237,10 @@ mod tests {
         let mut tracker = TerminalModeTracker::new();
 
         assert!(!tracker.observe_child_output(b"\x1b"));
-        assert_eq!(tracker.mode().deckpam, false);
+        assert!(!tracker.mode().deckpam);
 
         assert!(tracker.observe_child_output(b"="));
-        assert_eq!(tracker.mode().deckpam, true);
+        assert!(tracker.mode().deckpam);
     }
 
     #[test]
@@ -248,10 +248,10 @@ mod tests {
         let mut tracker = TerminalModeTracker::new();
 
         assert!(tracker.observe_child_output(b"\x1b[?1h"));
-        assert_eq!(tracker.mode().decckm, true);
+        assert!(tracker.mode().decckm);
 
         assert!(tracker.observe_child_output(b"\x1b[?1l"));
-        assert_eq!(tracker.mode().decckm, false);
+        assert!(!tracker.mode().decckm);
     }
 
     #[test]
@@ -259,10 +259,10 @@ mod tests {
         let mut tracker = TerminalModeTracker::new();
 
         assert!(!tracker.observe_child_output(b"\x1b[?"));
-        assert_eq!(tracker.mode().decckm, false);
+        assert!(!tracker.mode().decckm);
 
         assert!(tracker.observe_child_output(b"1h"));
-        assert_eq!(tracker.mode().decckm, true);
+        assert!(tracker.mode().decckm);
     }
 
     #[test]
@@ -285,10 +285,10 @@ mod tests {
         let mut tracker = TerminalModeTracker::new();
 
         assert!(tracker.observe_child_output(b"\x1b[?25;1h"));
-        assert_eq!(tracker.mode().decckm, true);
+        assert!(tracker.mode().decckm);
 
         assert!(tracker.observe_child_output(b"\x1b[?25;1l"));
-        assert_eq!(tracker.mode().decckm, false);
+        assert!(!tracker.mode().decckm);
     }
 
     #[test]
@@ -296,7 +296,7 @@ mod tests {
         let mut tracker = TerminalModeTracker::new();
 
         assert!(!tracker.observe_child_output(b"\x1b[?1 h"));
-        assert_eq!(tracker.mode().decckm, false);
+        assert!(!tracker.mode().decckm);
     }
 
     #[test]
@@ -530,7 +530,7 @@ mod tests {
         assert!(!tracker.observe_child_output(b"\x07"));
 
         assert!(tracker.observe_child_output(b"\x1b[?1h"));
-        assert_eq!(tracker.mode().decckm, true);
+        assert!(tracker.mode().decckm);
     }
 
     #[test]
@@ -540,7 +540,7 @@ mod tests {
         assert!(!tracker.observe_child_output(b"\x1b[?1\x80"));
 
         assert!(tracker.observe_child_output(b"\x1b[?1h"));
-        assert_eq!(tracker.mode().decckm, true);
+        assert!(tracker.mode().decckm);
     }
 
     #[test]
@@ -548,7 +548,7 @@ mod tests {
         let mut tracker = TerminalModeTracker::new();
 
         assert!(!tracker.observe_child_output(b"\x9b?1h"));
-        assert_eq!(tracker.mode().decckm, false);
+        assert!(!tracker.mode().decckm);
 
         assert!(!tracker.observe_child_output(b"\x9b=5u"));
         assert_eq!(tracker.mode().kitty_flags, 0);

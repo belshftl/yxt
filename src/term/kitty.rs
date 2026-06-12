@@ -25,7 +25,7 @@ pub fn decode_csi_u_params(params: &[u8]) -> Option<Vec<Token>> {
     //
     // alt[0-9]+ and text[0-9]+ are single unicode codepoints
     let mut idx = 0;
-    let code = read_u32(params, &mut idx, 0x10ffff)?;
+    let code = read_u32(params, &mut idx, 0x10_ffff)?;
 
     // skip `:alt`s if they're there
     loop {
@@ -36,7 +36,7 @@ pub fn decode_csi_u_params(params: &[u8]) -> Option<Vec<Token>> {
         idx += 1;
         skip_ws(params, &mut idx);
         // validate and skip number
-        _ = read_u32(params, &mut idx, 0x10ffff)?;
+        _ = read_u32(params, &mut idx, 0x10_ffff)?;
     }
     skip_ws(params, &mut idx);
 
@@ -77,7 +77,7 @@ fn parse_mods_and_type(body: &[u8], idx: &mut usize) -> Option<(Mods, KeyEventKi
     let m = read_u32(body, idx, u32::from(u8::MAX) + 1)?;
     let mods = if m > 0 {
         let bits = (m - 1) & !u32::from(Mods::KITTY_IGNORED_LOCK_BITS);
-        if bits & !0b111111 != 0 {
+        if bits & !0b11_1111 != 0 {
             return None; // malformed input
         }
 
@@ -242,7 +242,7 @@ fn parse_text_fields(
             continue;
         }
         // replace invalid codepoints with U+FFFD REPLACEMENT CHARACTER
-        let code = read_u32(params, idx, 0x10ffff)?;
+        let code = read_u32(params, idx, 0x10_ffff)?;
         let ch = char::from_u32(code).unwrap_or('\u{fffd}');
         out.push(Token::Utf8 { ch, mods, kind });
         skip_ws(params, idx);

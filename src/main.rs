@@ -10,7 +10,6 @@
 #![allow(clippy::similar_names)]
 #![allow(clippy::struct_excessive_bools)]
 #![allow(clippy::too_many_lines)]
-#![allow(clippy::unreadable_literal)]
 
 mod config;
 mod model;

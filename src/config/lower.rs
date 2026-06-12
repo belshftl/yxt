@@ -1399,7 +1399,7 @@ mod tests {
     fn command_exec_requires_string_args_and_nonempty_argv0() {
         for command in [call("exec", vec![]), call("exec", vec![string("")])] {
             let e = err(vec![directive("service", vec![string("helper"), command])]);
-            assert!(matches!(e, ErrorKind::EmptyCommand { .. }));
+            assert!(matches!(e, ErrorKind::EmptyCommand));
         }
 
         let e = err(vec![directive(
@@ -1424,7 +1424,7 @@ mod tests {
             "service",
             vec![string("helper"), call("sh", vec![string("")])],
         )]);
-        assert!(matches!(e, ErrorKind::EmptyCommand { .. }));
+        assert!(matches!(e, ErrorKind::EmptyCommand));
     }
 
     #[test]
@@ -1566,7 +1566,7 @@ mod tests {
             call("key", vec![ident("f1")]),
             call("send_key", vec![pair('x', 'X')]),
         )]);
-        assert!(matches!(e, ErrorKind::PairUnsupported { .. }));
+        assert!(matches!(e, ErrorKind::PairUnsupported));
     }
 
     #[test]
@@ -1619,7 +1619,7 @@ mod tests {
             call("key", vec![bad_pair()]),
             call("send_key", vec![ch('x')]),
         )]);
-        assert!(matches!(e, ErrorKind::CharPairKeyNeedsChars { .. }));
+        assert!(matches!(e, ErrorKind::CharPairKeyNeedsChars));
     }
 
     #[test]
@@ -1882,7 +1882,7 @@ mod tests {
             call("key", vec![ident("f1"), string("ctrl")]),
             call("send_key", vec![ch('x')]),
         )]);
-        assert!(matches!(e, ErrorKind::BadMods { .. }));
+        assert!(matches!(e, ErrorKind::BadMods));
     }
 
     #[test]
@@ -1967,7 +1967,7 @@ mod tests {
                 call("group", vec![string("g")]),
             ),
         ]);
-        assert!(matches!(e, ErrorKind::GroupSelfMap { .. }));
+        assert!(matches!(e, ErrorKind::GroupSelfMap));
     }
 
     #[test]
@@ -1976,7 +1976,7 @@ mod tests {
             call("send_key", vec![ch('x')]),
             call("send_key", vec![ch('y')]),
         )]);
-        assert!(matches!(e, ErrorKind::SendTokenAsSource { .. }));
+        assert!(matches!(e, ErrorKind::SendTokenAsSource));
     }
 
     #[test]
@@ -1985,7 +1985,7 @@ mod tests {
             call("key", vec![ident("f1")]),
             call("key", vec![ident("f2")]),
         )]);
-        assert!(matches!(e, ErrorKind::SourceTokenAsTarget { .. }));
+        assert!(matches!(e, ErrorKind::SourceTokenAsTarget));
     }
 
     #[test]
@@ -1994,7 +1994,7 @@ mod tests {
             call("sh", vec![string("echo hi")]),
             call("send_key", vec![ch('x')]),
         )]);
-        assert!(matches!(e, ErrorKind::ActionAsSource { .. }));
+        assert!(matches!(e, ErrorKind::ActionAsSource));
     }
 
     #[test]
@@ -2003,7 +2003,7 @@ mod tests {
             call("key", vec![ident("f1")]),
             call("sockdata_utf8", vec![string("reload")]),
         )]);
-        assert!(matches!(e, ErrorKind::EventAsTarget { .. }));
+        assert!(matches!(e, ErrorKind::EventAsTarget));
     }
 
     #[test]
@@ -2012,7 +2012,7 @@ mod tests {
             call("inherit_key", vec![pair('x', 'X')]),
             call("send_key", vec![ch('y')]),
         )]);
-        assert!(matches!(e, ErrorKind::InheritTokenAsSource { .. }));
+        assert!(matches!(e, ErrorKind::InheritTokenAsSource));
     }
 
     #[test]
@@ -2170,14 +2170,14 @@ mod tests {
                 call("send_key", vec![ch('x')]),
             ),
         ]);
-        assert!(matches!(e, ErrorKind::InvalidPassthroughSource { .. }));
+        assert!(matches!(e, ErrorKind::InvalidPassthroughSource));
 
         let e = err(vec![map_with_attrs(
             vec![attr("passthrough", vec![])],
             call("sockdata_utf8", vec![string("reload")]),
             call("sh", vec![string("reload")]),
         )]);
-        assert!(matches!(e, ErrorKind::InvalidPassthroughSource { .. }));
+        assert!(matches!(e, ErrorKind::InvalidPassthroughSource));
     }
 
     #[test]

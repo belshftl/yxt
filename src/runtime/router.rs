@@ -299,10 +299,10 @@ mod tests {
     #[test]
     fn unmatched_input_produces_no_effects() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(f1) => send_key('x')
-"#,
+",
         );
 
         let result = fire_key(&router, Key::Function(2), Mods::EMPTY);
@@ -314,10 +314,10 @@ key(f1) => send_key('x')
     #[test]
     fn direct_named_key_to_concrete_utf8_mapping() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(f1) => send_key('x')
-"#,
+",
         );
 
         let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
@@ -332,10 +332,10 @@ key(f1) => send_key('x')
     #[test]
     fn direct_named_key_to_named_key_mapping() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(f1) => send_key(enter)
-"#,
+",
         );
 
         let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
@@ -395,10 +395,10 @@ sockdata_utf8("reload") => sh("reload")
     #[test]
     fn source_default_mod_pattern_is_none() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(f1) => send_key('x')
-"#,
+",
         );
 
         assert!(fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
@@ -409,10 +409,10 @@ key(f1) => send_key('x')
     #[test]
     fn source_any_mod_pattern_matches_everything() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(f1, any) => send_key('x')
-"#,
+",
         );
 
         assert!(fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
@@ -423,10 +423,10 @@ key(f1, any) => send_key('x')
     #[test]
     fn source_explicit_mod_pattern_is_exact() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(f1, ctrl) => send_key('x')
-"#,
+",
         );
 
         assert!(!fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
@@ -445,10 +445,10 @@ key(f1, ctrl) => send_key('x')
     #[test]
     fn target_token_modifiers_are_preserved() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(f1) => send_key('x', ctrl & alt)
-"#,
+",
         );
 
         let result = fire_key(&router, Key::Function(1), Mods::EMPTY);
@@ -585,11 +585,11 @@ key('x'~'X') => sh("should run only for external x")
     #[test]
     fn char_pair_matches_unshifted_and_shifted_sides_using_logical_mods() {
         let router = router(
-            r#"
+            r"
 @version 1
 key('x'~'X') => send_key('u')
 key('x'~'X', shift) => send_key('s')
-"#,
+",
         );
 
         let result = fire_utf8(&router, 'x', Mods::EMPTY);
@@ -612,10 +612,10 @@ key('x'~'X', shift) => send_key('s')
     #[test]
     fn char_pair_shift_side_matches_even_when_shift_mod_is_reported() {
         let router = router(
-            r#"
+            r"
 @version 1
 key('x'~'X', shift) => send_key('s')
-"#,
+",
         );
 
         let result = fire_utf8(&router, 'X', Mods::SHIFT);
@@ -630,11 +630,11 @@ key('x'~'X', shift) => send_key('s')
     #[test]
     fn same_char_pair_uses_actual_mods_for_logical_mods() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(' '~' ') => send_key('u')
 key(' '~' ', shift) => send_key('s')
-"#,
+",
         );
 
         let result = fire_utf8(&router, ' ', Mods::EMPTY);
@@ -657,10 +657,10 @@ key(' '~' ', shift) => send_key('s')
     #[test]
     fn named_key_missing_mod_pattern_defaults_to_none() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(f1) => send_key('x')
-"#,
+",
         );
 
         assert!(fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
@@ -671,10 +671,10 @@ key(f1) => send_key('x')
     #[test]
     fn named_key_mod_pattern_any_matches_all_mod_masks() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(f1, any) => send_key('x')
-"#,
+",
         );
         for mods in [
             Mods::EMPTY,
@@ -695,10 +695,10 @@ key(f1, any) => send_key('x')
     #[test]
     fn named_key_mod_pattern_exact_mask_rejects_subset_and_superset() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(f1, alt & ctrl) => send_key('x')
-"#,
+",
         );
 
         assert!(!fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
@@ -719,10 +719,10 @@ key(f1, alt & ctrl) => send_key('x')
     #[test]
     fn char_pair_default_none_matches_unshifted_logical_side_only() {
         let router = router(
-            r#"
+            r"
 @version 1
 key('x'~'X') => send_key('u')
-"#,
+",
         );
 
         assert!(fire_utf8(&router, 'x', Mods::EMPTY).matched);
@@ -738,10 +738,10 @@ key('x'~'X') => send_key('u')
     #[test]
     fn char_pair_shift_pattern_matches_shifted_logical_side() {
         let router = router(
-            r#"
+            r"
 @version 1
 key('x'~'X', shift) => send_key('s')
-"#,
+",
         );
 
         assert!(!fire_utf8(&router, 'x', Mods::EMPTY).matched);
@@ -755,10 +755,10 @@ key('x'~'X', shift) => send_key('s')
     #[test]
     fn char_pair_ctrl_pattern_uses_logical_mods() {
         let router = router(
-            r#"
+            r"
 @version 1
 key('x'~'X', ctrl) => send_key('c')
-"#,
+",
         );
 
         assert!(fire_utf8(&router, 'x', Mods::CTRL).matched);
@@ -774,10 +774,10 @@ key('x'~'X', ctrl) => send_key('c')
     #[test]
     fn char_pair_ctrl_shift_pattern_matches_shifted_side_with_ctrl() {
         let router = router(
-            r#"
+            r"
 @version 1
 key('x'~'X', ctrl & shift) => send_key('s')
-"#,
+",
         );
 
         assert!(!fire_utf8(&router, 'x', Mods::CTRL).matched);
@@ -793,11 +793,11 @@ key('x'~'X', ctrl & shift) => send_key('s')
     #[test]
     fn same_char_char_pair_does_not_infer_shift_from_character() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(' '~' ') => send_key('u')
 key(' '~' ', shift) => send_key('s')
-"#,
+",
         );
 
         let result = fire_utf8(&router, ' ', Mods::EMPTY);
@@ -818,10 +818,10 @@ key(' '~' ', shift) => send_key('s')
     #[test]
     fn same_char_pair_any_matches_with_or_without_reported_shift() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(' '~' ', any) => send_key('x')
-"#,
+",
         );
 
         assert!(fire_utf8(&router, ' ', Mods::EMPTY).matched);
@@ -833,10 +833,10 @@ key(' '~' ', any) => send_key('x')
     #[test]
     fn token_to_token_preserves_press_repeat_release() {
         let router = router(
-            r#"
+            r"
 @version 1
 key('x'~'X') => send_key('y')
-"#,
+",
         );
 
         for kind in [
@@ -946,10 +946,10 @@ key('x'~'X') => sh("x")
     #[test]
     fn unmatched_release_is_not_matched() {
         let router = router(
-            r#"
+            r"
 @version 1
 key('x'~'X') => send_key('y')
-"#,
+",
         );
 
         let token = Token::Utf8 {
@@ -967,10 +967,10 @@ key('x'~'X') => send_key('y')
     #[test]
     fn normal_token_target_does_not_copy_modifiers() {
         let router = router(
-            r#"
+            r"
 @version 1
 key('x'~'X', ctrl) => send_key('y')
-"#,
+",
         );
 
         let token = Token::Utf8 {
@@ -995,10 +995,10 @@ key('x'~'X', ctrl) => send_key('y')
     #[test]
     fn inherit_named_key_copies_actual_modifiers_and_kind() {
         let router = router(
-            r#"
+            r"
 @version 1
 key('x'~'X', ctrl & alt) => inherit_key(enter)
-"#,
+",
         );
 
         let token = Token::Utf8 {
@@ -1023,10 +1023,10 @@ key('x'~'X', ctrl & alt) => inherit_key(enter)
     #[test]
     fn inherit_char_pair_chooses_side_from_logical_shift_and_preserves_actual_mods() {
         let router = router(
-            r#"
+            r"
 @version 1
 key('x'~'X', any) => inherit_key('w'~'W')
-"#,
+",
         );
 
         let result = fire_utf8(&router, 'x', Mods::CTRL);
@@ -1057,10 +1057,10 @@ key('x'~'X', any) => inherit_key('w'~'W')
     #[test]
     fn inherit_same_char_pair_preserves_shift_when_terminal_reported_it() {
         let router = router(
-            r#"
+            r"
 @version 1
 key(' '~' ', any) => inherit_key(' '~' ')
-"#,
+",
         );
 
         let result = fire_utf8(&router, ' ', Mods::SHIFT);
@@ -1108,10 +1108,10 @@ passthrough! key(f1, ctrl) => sh("xyz")
     #[test]
     fn passthrough_token_mapping_emits_original_token_before_target_effect() {
         let router = router(
-            r#"
+            r"
 @version 1
 passthrough! key('x'~'X', any) => send_key('y')
-"#,
+",
         );
 
         let input = Token::Utf8 {
@@ -1289,6 +1289,7 @@ group("c") => group("b")
                 Mods::EMPTY,
             )))
             .unwrap_err();
+        #[allow(clippy::match_wildcard_for_single_variants)]
         match err {
             RouteError::GroupCycle { stack, repeated } => {
                 assert!(!stack.is_empty());
