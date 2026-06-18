@@ -66,7 +66,7 @@ impl SignalRegistry {
                 _ = libc::write(
                     write_raw_fd,
                     (&raw const byte).cast(),
-                    core::mem::size_of_val(&byte),
+                    std::mem::size_of_val(&byte),
                 );
             })
         }
