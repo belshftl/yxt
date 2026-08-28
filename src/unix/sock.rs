@@ -14,7 +14,12 @@ const MAX_UNIX_SOCKET_PATH_BYTES: usize = 91;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ControlSockError {
-    #[error("XDG_RUNTIME_DIR is not set; set `sock` explicitly")]
+    #[cfg(not(target_os = "macos"))]
+    #[error("XDG_RUNTIME_DIR is not set; pass `--sock` explicitly")]
+    NoRuntimeDir,
+
+    #[cfg(target_os = "macos")]
+    #[error("neither TMPDIR nor XDG_RUNTIME_DIR are set; pass `--sock` explicitly")]
     NoRuntimeDir,
 
     #[error("command {0:?} has no basename")]
@@ -136,8 +141,19 @@ impl AsRawFd for ControlSock {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 pub fn default_sock_path(prog_name: &str) -> Result<PathBuf, ControlSockError> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or(ControlSockError::NoRuntimeDir)?;
+    Ok(PathBuf::from(dir)
+        .join(prog_name)
+        .join(format!("{}.sock", std::process::id())))
+}
+
+#[cfg(target_os = "macos")]
+pub fn default_sock_path(prog_name: &str) -> Result<PathBuf, ControlSockError> {
+    let dir = std::env::var_os("TMPDIR")
+        .or_else(|| std::env::var_os("XDG_RUNTIME_DIR"))
+        .ok_or(ControlSockError::NoRuntimeDir)?;
     Ok(PathBuf::from(dir)
         .join(prog_name)
         .join(format!("{}.sock", std::process::id())))

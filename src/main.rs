@@ -5,7 +5,6 @@
 #![deny(clippy::borrow_as_ptr)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![warn(clippy::pedantic)]
-#![allow(clippy::items_after_statements)]
 #![allow(clippy::option_option)]
 #![allow(clippy::similar_names)]
 #![allow(clippy::struct_excessive_bools)]
@@ -178,135 +177,9 @@ fn main() {
 }
 
 fn run(argv0: &str) -> Result<i32, AppError> {
-    try_pledge("stdio rpath wpath cpath unix tty proc exec", None)?;
-
-    let cli = Cli::parse()?;
-    if cli.help {
-        eprint!("\
-usage: {argv0} [options] command [args ...]
-remap/inject/filter for terminal input based on config rules
-
-options:
-  -c, --config <PATH>          config file to use
-      --sock <PATH>            path of the created socket (computes a unique one by default)
-      --no-implicit-config     don't use an implicit config if found
-      --allow-sensitive-child  allow running with children in a \"sensitive\" blocklist (e.g sudo, pinentry...)
-      --check-config           parse config and exit
-      --dump-config            parse config, print parse result, and exit
-  -h, --help                   display this help and exit
-  -V, --version                output version information and exit
-");
-        return Ok(0);
-    }
-    if cli.version {
-        eprintln!("yxt v0.1.0-alpha");
-        return Ok(0);
-    }
-    if !cli.check_config && !cli.dump_config && cli.command.is_empty() {
-        eprint!(
-            "\
-usage: {argv0} [options] command [args ...]
-try '--help' for more info
-"
-        );
-        return Ok(2);
-    }
-
-    let config_path = config_path(&cli)?;
-    let mut loader = ConfigLoader::new();
-    let config = match loader.parse_file(config_path.as_ref()) {
-        Ok(c) => c,
-        Err(e) => {
-            loader.report_err(e);
-            return Ok(2);
-        }
-    };
-
-    if cli.check_config {
-        return Ok(0);
-    }
-
-    if cli.dump_config {
-        println!("{config:#?}");
-        return Ok(0);
-    }
-
-    if !cli.allow_sensitive_child
-        && let Some(child_name) = cli.command[0].to_str()
-        && SENSITIVE_CHILD_BASENAMES.contains(&child_name)
-    {
-        return Err(AppError::SensitiveChild(child_name.to_owned()));
-    }
-
-    let sock_path = default_sock_path("yxt")?;
-    let sock = ControlSock::bind(&sock_path, 8192)?;
-
-    try_pledge("stdio rpath tty proc exec", None)?;
+    // --------------------------------------------------------------
 
     const SHUTDOWN_GRACE: Duration = Duration::from_millis(300);
-    let env = ChildEnv {
-        vars: vec![
-            (
-                OsString::from("YXT_PID"),
-                OsString::from(std::process::id().to_string()),
-            ),
-            (OsString::from("YXT_SOCK"), sock_path.as_os_str().to_owned()),
-        ],
-    };
-    let child_opts = ChildSpawnOptions {
-        env: env.clone(),
-        cwd: None,
-        stdin: ChildStdio::Null,
-        stdout: ChildStdio::Null,
-        stderr: ChildStdio::Null,
-    };
-    let mut actions = ActionManager::new(child_opts.clone());
-    let mut services = ServiceManager::start(&config.services, &child_opts, SHUTDOWN_GRACE)?;
-
-    let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
-    let winsize = get_winsize(&stdin).ok();
-
-    let child_spec = OsCommandSpec::Exec { argv: cli.command };
-    let mut pty_child = spawn_pty_attached(
-        &child_spec,
-        &PtyChildSpawnOptions {
-            env: env.clone(),
-            cwd: None,
-            window_size: winsize,
-        },
-    )?;
-
-    let _raw = RawTerminal::enter(&stdin)?;
-    let _sock_nonblock = NonblockingFd::new(sock.as_fd())?;
-    let _stdin_nonblock = NonblockingFd::new(stdin.as_fd())?;
-    let _stdout_nonblock = NonblockingFd::new(stdin.as_fd())?;
-    let _pty_nonblock = NonblockingFd::new(pty_child.pty_master.as_fd())?;
-
-    let mut signals = SignalRegistry::new()?;
-    signals.register(libc::SIGINT)?;
-    signals.register(libc::SIGTERM)?;
-    signals.register(libc::SIGWINCH)?;
-    for src in config.mappings.iter().map(|m| &m.from) {
-        if let Source::Event(Event::Signal(Signal(sig))) = src
-            && let Err(e) = signals.register(*sig)
-            && !matches!(e, SignalError::AlreadyRegistered(_))
-        {
-            return Err(AppError::Signal(e));
-        }
-    }
-
-    let mut decoder = Decoder::new(DecoderConfig {
-        mode: TermMode::LEGACY,
-        esc_byte_is_partial_esc: config.options.esc_byte_is_partial_esc,
-        partial_utf8_timeout: Duration::from_millis(config.options.partial_utf8_timeout_ms),
-        partial_esc_timeout: Duration::from_millis(config.options.partial_esc_timeout_ms),
-        partial_st_timeout: Duration::from_millis(config.options.partial_st_timeout_ms),
-        max_pending_bytes: config.options.max_pending_decoder_bytes,
-    });
-    let mut encoder = Encoder::new(TermMode::LEGACY);
-    let mut tracker = TerminalModeTracker::new();
-    let router = Router::new(&config);
 
     fn apply_effect(
         effect: &RouteEffect,
@@ -378,6 +251,137 @@ try '--help' for more info
         }
         Ok(())
     }
+
+    // --------------------------------------------------------------
+
+    try_pledge("stdio rpath wpath cpath unix tty proc exec", None)?;
+
+    let cli = Cli::parse()?;
+    if cli.help {
+        eprint!("\
+usage: {argv0} [options] command [args ...]
+remap/inject/filter for terminal input based on config rules
+
+options:
+  -c, --config <PATH>          config file to use
+      --sock <PATH>            path of the created socket (computes a unique one by default)
+      --no-implicit-config     don't use an implicit config if found
+      --allow-sensitive-child  allow running with children in a \"sensitive\" blocklist (e.g sudo, pinentry...)
+      --check-config           parse config and exit
+      --dump-config            parse config, print parse result, and exit
+  -h, --help                   display this help and exit
+  -V, --version                output version information and exit
+");
+        return Ok(0);
+    }
+    if cli.version {
+        eprintln!("yxt v0.1.0-alpha");
+        return Ok(0);
+    }
+    if !cli.check_config && !cli.dump_config && cli.command.is_empty() {
+        eprint!(
+            "\
+usage: {argv0} [options] command [args ...]
+try '--help' for more info
+"
+        );
+        return Ok(2);
+    }
+
+    let config_path = config_path(&cli)?;
+    let mut loader = ConfigLoader::new();
+    let config = match loader.parse_file(config_path.as_ref()) {
+        Ok(c) => c,
+        Err(e) => {
+            loader.report_err(e);
+            return Ok(2);
+        }
+    };
+
+    if cli.check_config {
+        return Ok(0);
+    }
+
+    if cli.dump_config {
+        println!("{config:#?}");
+        return Ok(0);
+    }
+
+    if !cli.allow_sensitive_child
+        && let Some(child_name) = cli.command[0].to_str()
+        && SENSITIVE_CHILD_BASENAMES.contains(&child_name)
+    {
+        return Err(AppError::SensitiveChild(child_name.to_owned()));
+    }
+
+    let sock_path = cli.sock.map_or_else(|| default_sock_path("yxt"), Ok)?;
+    let sock = ControlSock::bind(&sock_path, 8192)?;
+
+    try_pledge("stdio rpath tty proc exec", None)?;
+
+    let env = ChildEnv {
+        vars: vec![
+            (
+                OsString::from("YXT_PID"),
+                OsString::from(std::process::id().to_string()),
+            ),
+            (OsString::from("YXT_SOCK"), sock_path.as_os_str().to_owned()),
+        ],
+    };
+    let child_opts = ChildSpawnOptions {
+        env: env.clone(),
+        cwd: None,
+        stdin: ChildStdio::Null,
+        stdout: ChildStdio::Null,
+        stderr: ChildStdio::Null,
+    };
+    let mut actions = ActionManager::new(child_opts.clone());
+    let mut services = ServiceManager::start(&config.services, &child_opts, SHUTDOWN_GRACE)?;
+
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let winsize = get_winsize(&stdin).ok();
+
+    let child_spec = OsCommandSpec::Exec { argv: cli.command };
+    let mut pty_child = spawn_pty_attached(
+        &child_spec,
+        &PtyChildSpawnOptions {
+            env: env.clone(),
+            cwd: None,
+            window_size: winsize,
+        },
+    )?;
+
+    let _raw = RawTerminal::enter(&stdin)?;
+    let _sock_nonblock = NonblockingFd::new(sock.as_fd())?;
+    let _stdin_nonblock = NonblockingFd::new(stdin.as_fd())?;
+    let _stdout_nonblock = NonblockingFd::new(stdin.as_fd())?;
+    let _pty_nonblock = NonblockingFd::new(pty_child.pty_master.as_fd())?;
+
+    let mut signals = SignalRegistry::new()?;
+    signals.register(libc::SIGINT)?;
+    signals.register(libc::SIGTERM)?;
+    signals.register(libc::SIGWINCH)?;
+    for src in config.mappings.iter().map(|m| &m.from) {
+        if let Source::Event(Event::Signal(Signal(sig))) = src
+            && let Err(e) = signals.register(*sig)
+            && !matches!(e, SignalError::AlreadyRegistered(_))
+        {
+            return Err(AppError::Signal(e));
+        }
+    }
+
+    let mut decoder = Decoder::new(DecoderConfig {
+        mode: TermMode::LEGACY,
+        esc_byte_is_partial_esc: config.options.esc_byte_is_partial_esc,
+        partial_utf8_timeout: Duration::from_millis(config.options.partial_utf8_timeout_ms),
+        partial_esc_timeout: Duration::from_millis(config.options.partial_esc_timeout_ms),
+        partial_st_timeout: Duration::from_millis(config.options.partial_st_timeout_ms),
+        max_pending_bytes: config.options.max_pending_decoder_bytes,
+    });
+    let mut encoder = Encoder::new(TermMode::LEGACY);
+    let mut tracker = TerminalModeTracker::new();
+    let router = Router::new(&config);
 
     let mut stdin_buf = vec![0u8; 8192].into_boxed_slice();
     let mut master_queue = ByteQueue::new(32768);

@@ -6,6 +6,7 @@ use std::ffi::CStr;
 use std::io::Error;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::sync::Mutex;
 
 #[derive(Debug)]
 pub struct RawTerminal {
@@ -113,7 +114,7 @@ pub fn get_winsize<F: AsFd + ?Sized>(fd: &F) -> std::io::Result<winsize> {
 pub fn set_winsize<F: AsFd + ?Sized>(fd: &F, ws: winsize) -> std::io::Result<()> {
     // SAFETY: `fd.as_fd().as_raw_fd()` is a valid borrowed fd for the duration of this call; `ws`
     // is a valid initialized `winsize` and does not get retained by the `ioctl` call
-    if unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), libc::TIOCSWINSZ, ws) } < 0 {
+    if unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), libc::TIOCSWINSZ, &raw const ws) } < 0 {
         Err(Error::last_os_error())
     } else {
         Ok(())
@@ -145,7 +146,7 @@ pub unsafe fn switch_to_ctty(fd: RawFd) -> std::io::Result<()> {
     // is typically a small wrapper over a raw syscall. invalid `fd` is reported as a syscall error
     // additionally, if this call fails, the process will remain `setsid`'d, so callers must treat
     // errors with caution
-    if unsafe { libc::ioctl(fd, libc::TIOCSCTTY, 0 as libc::c_int) } < 0 {
+    if unsafe { libc::ioctl(fd, libc::c_ulong::from(libc::TIOCSCTTY), 0 as libc::c_int) } < 0 {
         return Err(Error::last_os_error());
     }
 
@@ -175,6 +176,8 @@ pub enum PtyOpenError {
     OpenSlave(std::io::Error),
 }
 
+static PTSNAME_LOCK: Mutex<()> = Mutex::new(());
+
 pub fn open_pty_pair() -> Result<PtyPair, PtyOpenError> {
     // SAFETY: `posix_openpt` takes no pointer arguments, called with valid flag bits here
     let master_raw_fd =
@@ -199,34 +202,21 @@ pub fn open_pty_pair() -> Result<PtyPair, PtyOpenError> {
         return Err(PtyOpenError::Unlockpt(Error::last_os_error()));
     }
 
-    // a bit ugly, but `std::cmp::min` is still marked only `const: unstable`
-    // cap at 2048 to prevent large PATH_MAX from allocating a lot on the stack; technically, this
-    // can disallow valid filepaths longer than 2047 characters but, like, come on
-    // realistically it's going to be something like `/dev/pts/N`
-    const BUFSIZE: usize = if (libc::PATH_MAX as usize) < 2048usize {
-        libc::PATH_MAX as usize
-    } else {
-        2048usize
-    };
-    let mut buf = [MaybeUninit::<libc::c_char>::uninit(); BUFSIZE];
+    let name = {
+        let _guard = PTSNAME_LOCK.lock().unwrap();
 
-    // SAFETY: `buf` is valid for writes of up to `buf.len()` bytes and does not get retained by
-    // `ptsname_r`, and `master.as_raw_fd()` is a valid fd from a successful `posix_openpt` +
-    // `grantpt` + `unlockpt`
-    let rv = unsafe {
-        libc::ptsname_r(
-            master.as_raw_fd(),
-            buf.as_mut_ptr().cast::<libc::c_char>(),
-            buf.len(),
-        )
-    };
-    if rv != 0 {
-        // the usual style here is `< 0` but the manpage says it returns "an error number", not -1
-        return Err(PtyOpenError::Ptsname(Error::from_raw_os_error(rv)));
-    }
+        // SAFETY: this is the only place in the program where `ptsname` is called, it is under
+        // a mutex, and the data the returned pointer points to is copied out immediately;
+        // `master.as_raw_fd()` is a valid fd from a successful `posix_openpt` + `grantpt` +
+        // `unlockpt`
+        let name_ptr = unsafe { libc::ptsname(master.as_raw_fd()) };
+        if name_ptr.is_null() {
+            return Err(PtyOpenError::Unlockpt(Error::last_os_error()));
+        }
 
-    // SAFETY: earlier successful `ptsname_r` wrote a valid C string into `buf`
-    let name = unsafe { CStr::from_ptr(buf.as_ptr().cast::<libc::c_char>()) };
+        // SAFETY: earlier successful `ptsname` returned a valid C string stored in static storage
+        unsafe { CStr::from_ptr(name_ptr) }.to_owned()
+    };
 
     // SAFETY: `name.as_ptr()` is a valid NUL-terminated pathname returned by `ptsname_r`
     let slave_raw_fd = unsafe {
