@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
-use std::os::fd::{AsFd, BorrowedFd};
+use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
+use crate::runtime::io::{ReadResult, read, write_all_until};
 use crate::term::control::{ControlEvent, ControlScanner, CsiSeq, parse_simple_params};
-use crate::runtime::io::{ReadResult, WriteResult, read, write};
 use crate::unix::fd::{ReadyFds, SelectFds, select};
 
 // `CSI ? u`       kitty keyboard flags, answered as `CSI ? flags u`
@@ -70,7 +70,6 @@ impl QueriedTermMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QueryFd {
     Input,
-    Output,
 }
 
 pub fn query_term_mode<F: AsFd, G: AsFd>(
@@ -83,7 +82,7 @@ pub fn query_term_mode<F: AsFd, G: AsFd>(
     let deadline = Instant::now() + timeout;
     let mut queried = QueriedTermMode::default();
 
-    if !write_all(output, QUERY, deadline)? {
+    if !write_all_until(output, QUERY, deadline)? {
         return Ok(queried);
     }
 
@@ -118,9 +117,15 @@ pub fn query_term_mode<F: AsFd, G: AsFd>(
     Ok(queried)
 }
 
-fn wait(fds: &SelectFds<'_, QueryFd>, deadline: Instant) -> std::io::Result<Option<ReadyFds<QueryFd>>> {
+fn wait(
+    fds: &SelectFds<'_, QueryFd>,
+    deadline: Instant,
+) -> std::io::Result<Option<ReadyFds<QueryFd>>> {
     loop {
-        let Some(timeout) = deadline.checked_duration_since(Instant::now()).filter(|rem| !rem.is_zero()) else {
+        let Some(timeout) = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|rem| !rem.is_zero())
+        else {
             return Ok(None);
         };
         match select(fds, Some(timeout)) {
@@ -130,23 +135,4 @@ fn wait(fds: &SelectFds<'_, QueryFd>, deadline: Instant) -> std::io::Result<Opti
             Err(err) => return Err(err),
         }
     }
-}
-
-fn write_all(fd: BorrowedFd<'_>, mut buf: &[u8], deadline: Instant) -> std::io::Result<bool> {
-    let fds = SelectFds {
-        read: Vec::new(),
-        write: vec![(QueryFd::Output, fd)],
-    };
-    while !buf.is_empty() {
-        match write(&fd, buf)? {
-            WriteResult::Success(n) => buf = &buf[n..],
-            WriteResult::WouldBlock => {
-                if wait(&fds, deadline)?.is_none() {
-                    return Ok(false);
-                }
-            }
-            WriteResult::EmptyInput => unreachable!(),
-        }
-    }
-    Ok(true)
 }

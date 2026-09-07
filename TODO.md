@@ -1,6 +1,4 @@
 - print include chain in diagnostics for non-root files
 - group cycle / include cycle formatting
-- start `@protocol` plumbing
-- reserve `unsafe!` for things like `raw_passthrough!` and later raw byte/seq ops
-- logfile / live debug trace
+- consider reserving `unsafe!` for things like `bytes(...)` / `raw_passthrough!` / etc.
 - `unique_src!` to catch "why does this produce multiple keys" bugs

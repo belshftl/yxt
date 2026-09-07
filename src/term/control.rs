@@ -319,12 +319,30 @@ impl ControlScanner {
         }
     }
 
+    pub fn in_ground(&self) -> bool {
+        matches!(self.state, ScannerState::Ground)
+    }
+
     pub fn push(&mut self, bytes: &[u8]) -> Vec<ControlEvent> {
         self.out.clear();
         for &b in bytes {
             self.push_byte(b);
         }
         std::mem::take(&mut self.out)
+    }
+
+    pub fn resume(&mut self, bytes: &[u8], out: &mut Vec<ControlEvent>) -> usize {
+        self.out.clear();
+        let mut consumed = 0;
+        for &b in bytes {
+            self.push_byte(b);
+            consumed += 1;
+            if self.in_ground() {
+                break;
+            }
+        }
+        out.append(&mut self.out);
+        consumed
     }
 
     fn push_byte(&mut self, b: u8) {
@@ -907,6 +925,50 @@ mod tests {
                 "kind: {kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn resume_stops_after_the_sequence_ends() {
+        let mut scanner = ControlScanner::default();
+        let mut out = Vec::new();
+
+        assert_eq!(scanner.resume(b"\x1b[?1htail", &mut out), 5);
+        assert_eq!(
+            out,
+            vec![ControlEvent::Csi(OwnedCsiSeq {
+                raw: b"?1h".to_vec(),
+                params: b"?1".to_vec(),
+                intermediates: vec![],
+                final_byte: b'h',
+            })],
+        );
+    }
+
+    #[test]
+    fn resume_takes_everything_while_the_sequence_is_unfinished() {
+        let mut scanner = ControlScanner::default();
+        let mut out = Vec::new();
+
+        assert_eq!(scanner.resume(b"\x1b]0;a long title", &mut out), 16);
+        assert!(out.is_empty());
+        assert!(!scanner.in_ground());
+
+        assert_eq!(scanner.resume(b"\x07rest", &mut out), 1);
+        assert_eq!(
+            out,
+            vec![ControlEvent::StringTerminated(StringControlKind::Osc)]
+        );
+        assert!(scanner.in_ground());
+    }
+
+    #[test]
+    fn resume_appends_to_the_callers_events() {
+        let mut scanner = ControlScanner::default();
+        let mut out = vec![ControlEvent::Unknown];
+
+        scanner.resume(b"\x1b=", &mut out);
+
+        assert_eq!(out, vec![ControlEvent::Unknown, ControlEvent::Esc(b'=')]);
     }
 
     #[test]

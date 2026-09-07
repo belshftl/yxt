@@ -1,7 +1,12 @@
 [package]
 name = "yxt"
-version = "0.1.0-alpha"
+version = "0.1.0-beta"
 edition = "2024"
+description = "a decent key injector/remapper/grabber for terminal programs"
+repository = "https://github.com/belshftl/yxt"
+license = "MIT"
+keywords = ["cli", "keymap", "kitty", "terminal"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 lexopt = "0.3"

@@ -3,9 +3,22 @@
 
 #![warn(clippy::pedantic)]
 #![forbid(unsafe_op_in_unsafe_fn)]
-#![forbid(clippy::as_conversions)]
+#![forbid(
+    clippy::as_conversions,
+    reason = "the as operator is remarkably good at hiding all sorts of truncation/signed-wrap behavior that should be spelled out explicitly"
+)]
 #![forbid(clippy::borrow_as_ptr)]
+#![forbid(clippy::tests_outside_test_module)]
 #![forbid(clippy::undocumented_unsafe_blocks)]
+#![warn(clippy::debug_assert_with_mut_call)]
+#![warn(clippy::error_impl_error)]
+#![warn(clippy::exit)]
+#![warn(
+    clippy::partial_pub_fields,
+    reason = "private fields are usually extra state that'd need to somehow be kept in lockstep with the arbitrarily user modifiable public state"
+)]
+#![warn(clippy::str_to_string)]
+#![warn(clippy::useless_let_if_seq)]
 #![allow(clippy::option_option)]
 #![allow(clippy::similar_names)]
 #![allow(clippy::struct_excessive_bools)]
@@ -27,13 +40,13 @@ use crate::model::{Action, Event, Signal, Source};
 use crate::runtime::children::{ActionManager, ServiceManager};
 use crate::runtime::cli::{Cli, config_path};
 use crate::runtime::io::{
-    ByteQueue, ReadResult, ReadToQueueResult, WriteResult, WriteToPtyResult, drain_from_queue,
-    drain_to_pty_from_queue, read, read_pty_to_queue,
+    ByteQueue, ReadResult, WriteResult, WriteToPtyResult, drain_from_queue,
+    drain_to_pty_from_queue, read, read_pty, write_all_until,
 };
 use crate::runtime::router::{RouteEffect, RouteInput, Router};
 use crate::term::decode::{Decoded, Decoder, DecoderConfig};
 use crate::term::encode::Encoder;
-use crate::term::mode::{TermMode, TerminalModeTracker};
+use crate::term::negotiate::{self, RestoreGuard, TermProxy};
 use crate::term::query::query_term_mode;
 use crate::unix::child::{
     ChildEnv, ChildExt, ChildSpawnOptions, ChildStdio, OsCommandSpec, PtyChild,
@@ -151,10 +164,19 @@ run with --allow-sensitive-child to run anyways"
     #[error(transparent)]
     Route(#[from] crate::runtime::router::RouteError),
 
+    #[error(transparent)]
+    Negotiate(#[from] crate::term::negotiate::NegotiateError),
+
+    #[error("timed out writing the keyboard protocol setup to the terminal")]
+    NegotiateWriteTimeout,
+
     #[error(
         "PTY input queue of {0} bytes is full; child is not consuming its input or mapping expanded too much, bailing out"
     )]
     MasterQueueFull(usize),
+
+    #[error("terminal output queue of {0} bytes is full, bailing out")]
+    StdoutQueueFull(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,7 +189,7 @@ enum FdKey {
 }
 
 fn main() {
-    // use a tmp var because otherwise it's `temporary value dropped while borrowed`
+    // use a temporary binding as to not `temporary value dropped while borrowed`
     let a0_binding = std::env::args_os().next();
     let argv0 = a0_binding
         .as_deref()
@@ -185,6 +207,8 @@ fn run(argv0: &str) -> Result<i32, AppError> {
     // --------------------------------------------------------------
 
     const SHUTDOWN_GRACE: Duration = Duration::from_millis(300);
+    const NEGOTIATE_WRITE_TIMEOUT: Duration = Duration::from_millis(300);
+    const PROXY_INJECT_HEADROOM: usize = 32; // at most CSI = flags u per chunk of child output
 
     fn apply_effect(
         effect: &RouteEffect,
@@ -280,7 +304,7 @@ options:
         return Ok(0);
     }
     if cli.version {
-        eprintln!("yxt v0.1.0-alpha");
+        eprintln!("yxt v0.1.0-beta");
         return Ok(0);
     }
     if !cli.check_config && !cli.dump_config && cli.command.is_empty() {
@@ -347,10 +371,35 @@ try '--help' for more info
         stdout: ChildStdio::Null,
         stderr: ChildStdio::Null,
     };
+    let winsize = get_winsize(&stdin).ok();
+
+    let _raw = RawTerminal::enter(&stdin)?;
+    let _stdin_nonblock = NonblockingFd::new(stdin.as_fd())?;
+    let _stdout_nonblock = NonblockingFd::new(stdout.as_fd())?;
+
+    let queried = query_term_mode(
+        &stdin,
+        &stdout,
+        Duration::from_millis(config.options.mode_query_timeout_ms),
+    )?;
+    let negotiation = negotiate::plan(&config, queried)?;
+    let mut proxy = TermProxy::new(queried, negotiation);
+    let _restore = if let Some(enable) = proxy.enable_sequence() {
+        let guard = RestoreGuard::new(&stdout)?;
+        if !write_all_until(
+            stdout.as_fd(),
+            &enable,
+            Instant::now() + NEGOTIATE_WRITE_TIMEOUT,
+        )? {
+            return Err(AppError::NegotiateWriteTimeout);
+        }
+        Some(guard)
+    } else {
+        None
+    };
+
     let mut actions = ActionManager::new(child_opts.clone());
     let mut services = ServiceManager::start(&config.services, &child_opts, SHUTDOWN_GRACE)?;
-
-    let winsize = get_winsize(&stdin).ok();
 
     let child_spec = OsCommandSpec::Exec { argv: cli.command };
     let mut pty_child = spawn_pty_attached(
@@ -362,10 +411,7 @@ try '--help' for more info
         },
     )?;
 
-    let _raw = RawTerminal::enter(&stdin)?;
     let _sock_nonblock = NonblockingFd::new(sock.as_fd())?;
-    let _stdin_nonblock = NonblockingFd::new(stdin.as_fd())?;
-    let _stdout_nonblock = NonblockingFd::new(stdin.as_fd())?;
     let _pty_nonblock = NonblockingFd::new(pty_child.pty_master.as_fd())?;
 
     let mut signals = SignalRegistry::new()?;
@@ -381,20 +427,21 @@ try '--help' for more info
         }
     }
 
-    let queried = query_term_mode(&stdin, &stdout, Duration::from_millis(config.options.mode_query_timeout_ms))?;
-    let mut tracker = TerminalModeTracker::from_queried(queried);
     let mut decoder = Decoder::new(DecoderConfig {
-        mode: TermMode::LEGACY,
+        mode: proxy.upstream_mode(),
         esc_byte_is_partial_esc: config.options.esc_byte_is_partial_esc,
         partial_utf8_timeout: Duration::from_millis(config.options.partial_utf8_timeout_ms),
         partial_esc_timeout: Duration::from_millis(config.options.partial_esc_timeout_ms),
         partial_st_timeout: Duration::from_millis(config.options.partial_st_timeout_ms),
         max_pending_bytes: config.options.max_pending_decoder_bytes,
     });
-    let mut encoder = Encoder::new(TermMode::LEGACY);
+    let mut encoder = Encoder::new(proxy.downstream_mode());
     let router = Router::new(&config);
 
     let mut stdin_buf = vec![0u8; 8192].into_boxed_slice();
+    let mut pty_buf = vec![0u8; 8192].into_boxed_slice();
+    let mut to_terminal = Vec::new();
+    let mut to_child = Vec::new();
     let mut master_queue = ByteQueue::new(32768);
     let mut stdout_queue = ByteQueue::new(8192);
     let mut mode_dirty = false;
@@ -463,7 +510,7 @@ try '--help' for more info
                 read.push((FdKey::Stdin, stdin.as_fd()));
                 read.push((FdKey::Sock, sock.as_fd()));
             }
-            if stdout_queue.remaining() > 0 {
+            if stdout_queue.remaining() > PROXY_INJECT_HEADROOM {
                 read.push((FdKey::PtyMaster, pty_child.pty_master.as_fd()));
             }
             if !stdout_queue.is_empty() {
@@ -516,16 +563,37 @@ try '--help' for more info
         }
 
         if ready.readable(FdKey::PtyMaster) {
-            match read_pty_to_queue(&pty_child.pty_master, &mut stdout_queue)? {
-                ReadToQueueResult::Success { offset, len } => {
-                    let new = &stdout_queue.pending()[offset..offset + len];
-                    if tracker.observe_child_output(new) {
-                        decoder.set_mode(tracker.mode());
-                        encoder.set_mode(tracker.mode());
+            let room = stdout_queue
+                .remaining()
+                .saturating_sub(PROXY_INJECT_HEADROOM)
+                .min(pty_buf.len());
+            debug_assert!(
+                room > 0,
+                "pty master should only be polled when there's room"
+            );
+
+            match read_pty(&pty_child.pty_master, &mut pty_buf[..room])? {
+                ReadResult::Success(n) => {
+                    to_terminal.clear();
+                    to_child.clear();
+                    let outcome = proxy.push(&pty_buf[..n], &mut to_terminal, &mut to_child);
+
+                    stdout_queue
+                        .push(&to_terminal)
+                        .map_err(|_| AppError::StdoutQueueFull(stdout_queue.capacity()))?;
+                    master_queue
+                        .push(&to_child)
+                        .map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?;
+
+                    if outcome.upstream_changed {
+                        decoder.set_mode(proxy.upstream_mode());
                         mode_dirty = true;
                     }
+                    if outcome.downstream_changed {
+                        encoder.set_mode(proxy.downstream_mode());
+                    }
                 }
-                ReadToQueueResult::Eof => {
+                ReadResult::Eof => {
                     // child hung up, don't bother shutting it down, just quit
                     begin_shutdown(
                         &mut stopping,

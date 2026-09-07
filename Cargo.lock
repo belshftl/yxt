@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "yxt"
-version = "0.1.0-alpha"
+version = "0.1.0-beta"
 dependencies = [
  "lexopt",
  "libc",

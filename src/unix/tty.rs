@@ -8,10 +8,7 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Mutex;
 
-pub fn check_terminals<F: AsFd, G: AsFd>(
-    input: &F,
-    output: &G,
-) -> std::io::Result<bool> {
+pub fn check_terminals<F: AsFd, G: AsFd>(input: &F, output: &G) -> std::io::Result<bool> {
     let input = input.as_fd();
     let output = output.as_fd();
     if !input.is_terminal() || !output.is_terminal() {
@@ -177,7 +174,14 @@ pub unsafe fn switch_to_ctty(fd: RawFd) -> std::io::Result<()> {
     // is typically a small wrapper over a raw syscall. invalid `fd` is reported as a syscall error
     // additionally, if this call fails, the process will remain `setsid`'d, so callers must treat
     // errors with caution
-    if unsafe { libc::ioctl(fd, libc::c_ulong::from(libc::TIOCSCTTY), libc::c_int::from(0)) } < 0 {
+    if unsafe {
+        libc::ioctl(
+            fd,
+            libc::c_ulong::from(libc::TIOCSCTTY),
+            libc::c_int::from(0),
+        )
+    } < 0
+    {
         return Err(Error::last_os_error());
     }
 

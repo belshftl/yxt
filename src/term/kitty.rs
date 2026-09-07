@@ -4,9 +4,46 @@
 use super::control::{CsiSeq, read_u32};
 use crate::model::{Key, KeyEventKind, KeypadKey, MediaKey, ModifierKey, Mods, Token};
 
+pub const FLAG_DISAMBIGUATE_ESCAPE_CODES: u8 = 0x01;
 pub const FLAG_REPORT_EVENT_TYPES: u8 = 0x02;
 pub const FLAG_REPORT_ALL_KEYS: u8 = 0x08;
 pub const FLAG_REPORT_ASSOCIATED_TEXT: u8 = 0x10;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Control {
+    Set,
+    Push,
+    Pop,
+    Query,
+}
+
+pub fn classify_control(csi: CsiSeq<'_>) -> Option<Control> {
+    if csi.final_byte != b'u' || !csi.intermediates.is_empty() {
+        return None;
+    }
+    match csi.private_marker()? {
+        b'=' => Some(Control::Set),
+        b'>' => Some(Control::Push),
+        b'<' => Some(Control::Pop),
+        // CSI ? flags u with params is a reply not a query
+        b'?' if csi.params_without_private_marker().is_empty() => Some(Control::Query),
+        _ => None,
+    }
+}
+
+pub fn set_flags_sequence(flags: u8) -> Vec<u8> {
+    format!("\x1b[={flags}u").into_bytes()
+}
+
+pub fn push_flags_sequence(flags: u8) -> Vec<u8> {
+    format!("\x1b[>{flags}u").into_bytes()
+}
+
+pub const POP_FLAGS_SEQUENCE: &[u8] = b"\x1b[<u";
+
+pub fn query_reply(flags: u8) -> Vec<u8> {
+    format!("\x1b[?{flags}u").into_bytes()
+}
 
 pub fn decode_csi_u(csi: CsiSeq<'_>) -> Option<Vec<Token>> {
     if csi.final_byte != b'u' {
@@ -74,8 +111,17 @@ fn skip_ws(buf: &[u8], idx: &mut usize) {
 
 fn parse_mods_and_type(body: &[u8], idx: &mut usize) -> Option<(Mods, KeyEventKind)> {
     // this is also a bitfield with 1 added
-    let m = read_u32(body, idx, u32::from(u8::MAX) + 1)?;
-    let mods = if m > 0 {
+    // empty field means the default value of 1, which is how an unmodified key is reported when a
+    // later field (the associated text) is present, e.g. CSI 97;;97u
+    let m = if body.get(*idx).is_some_and(u8::is_ascii_digit) {
+        read_u32(body, idx, u32::from(u8::MAX) + 1)?
+    } else {
+        1
+    };
+    if m == 0 {
+        return None; // malformed input
+    }
+    let mods = {
         let bits = (m - 1) & !u32::from(Mods::KITTY_IGNORED_LOCK_BITS);
         if bits & !0b11_1111 != 0 {
             return None; // malformed input
@@ -101,8 +147,6 @@ fn parse_mods_and_type(body: &[u8], idx: &mut usize) -> Option<(Mods, KeyEventKi
             mods |= Mods::META;
         }
         mods
-    } else {
-        return None;
     };
     skip_ws(body, idx);
 
@@ -479,6 +523,33 @@ mod tests {
                 utf8('y', Mods::CTRL, KeyEventKind::Repeat),
             ]),
         );
+    }
+
+    #[test]
+    fn decodes_an_omitted_modifier_field_as_no_modifiers() {
+        // what a terminal reports for an unmodified key once associated text is being reported
+        assert_eq!(
+            decode_csi_u(csi(b"97;;97u")),
+            Some(vec![utf8('a', Mods::EMPTY, KeyEventKind::Press)]),
+        );
+        assert_eq!(
+            decode_csi_u(csi(b"97;:3;97u")),
+            Some(vec![utf8('a', Mods::EMPTY, KeyEventKind::Release)]),
+        );
+    }
+
+    #[test]
+    fn decodes_a_shifted_character_from_its_associated_text() {
+        assert_eq!(
+            decode_csi_u(csi(b"50;2;64u")),
+            Some(vec![utf8('@', Mods::SHIFT, KeyEventKind::Press)]),
+        );
+    }
+
+    #[test]
+    fn rejects_garbled_modifier_field() {
+        assert_eq!(decode_csi_u(csi(b"97;<;97u")), None);
+        assert_eq!(decode_csi_u(csi(b"97;0;97u")), None);
     }
 
     #[test]

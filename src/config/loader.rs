@@ -14,7 +14,7 @@ use crate::model::Config;
 pub struct SourceFile {
     pub path: PathBuf,
     pub text: String,
-    line_starts: Vec<usize>,
+    pub line_starts: Vec<usize>,
 }
 
 impl SourceFile {
@@ -420,6 +420,22 @@ mod tests {
 
     fn parse_err(path: &std::path::Path) -> ConfigLoadError {
         parse(path).unwrap_err()
+    }
+
+    fn protcool_err_span_text(mapping: &str) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let root = write_file(&dir, "root.conf", &format!("@version 1\n{mapping}\n"));
+
+        let ConfigLoadError::Semantic(crate::config::lower::ConfigError { kind, span }) =
+            parse_err(&root)
+        else {
+            panic!("expected a semantic error for {mapping:?}");
+        };
+        assert!(
+            matches!(kind, ErrorKind::SourceNeedsProtocol { .. }),
+            "expected a protocol error for {mapping:?}, got {kind:?}",
+        );
+        mapping[span.start..span.end].to_owned()
     }
 
     #[test]
@@ -1110,5 +1126,98 @@ group("reload") => sh("reload")
             cfg.mappings[1].from,
             Source::Event(Event::Sockdata(b"reload".to_vec())),
         );
+    }
+
+    #[test]
+    fn protocol_diagnostic_span_is_requiring_modifier() {
+        assert_eq!(
+            protcool_err_span_text("key('x'~, super) => send_key('y')"),
+            "super"
+        );
+        assert_eq!(
+            protcool_err_span_text("key('x'~, ctrl & super) => send_key('y')"),
+            "super"
+        );
+        assert_eq!(
+            protcool_err_span_text("key('x'~, super || hyper) => send_key('y')"),
+            "super"
+        );
+        assert_eq!(
+            protcool_err_span_text("key('x'~, shift || super) => send_key('y')"),
+            "super"
+        );
+        assert_eq!(
+            protcool_err_span_text("key('x'~, super || shift) => send_key('y')"),
+            "super"
+        );
+    }
+
+    #[test]
+    fn protocol_diagnostic_span_is_requiring_key() {
+        assert_eq!(
+            protcool_err_span_text("key(left_super) => send_key('y')"),
+            "left_super"
+        );
+        assert_eq!(
+            protcool_err_span_text("passthrough! key(media_play) => exec(\"true\")"),
+            "media_play",
+        );
+    }
+
+    #[test]
+    fn protocol_request_carries_across_includes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            &dir,
+            "keys.conf",
+            r"
+@version 1
+key('r'~, super) => send_key('x')
+",
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
+@version 1
+@protocol want kitty
+@include "keys.conf"
+"#,
+        );
+
+        let cfg = parse(&root).unwrap();
+        assert_eq!(cfg.protocol.protocol, crate::model::Protocol::Kitty);
+        assert_eq!(cfg.mappings.len(), 1);
+    }
+
+    #[test]
+    fn a_protocol_request_after_an_included_mapping_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            &dir,
+            "keys.conf",
+            r"
+@version 1
+key(f1) => send_key('x')
+",
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
+@version 1
+@include "keys.conf"
+@protocol want kitty
+"#,
+        );
+
+        let err = parse_err(&root);
+        assert!(matches!(
+            err,
+            ConfigLoadError::Semantic(crate::config::lower::ConfigError {
+                kind: ErrorKind::ProtocolAfterMappings,
+                ..
+            }),
+        ));
     }
 }

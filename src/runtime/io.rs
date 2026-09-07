@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 use std::cmp::Ordering;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, BorrowedFd};
+use std::time::Instant;
+
+use crate::unix::fd::{SelectFds, select};
 
 #[derive(Debug)]
 pub struct ByteQueue {
@@ -64,21 +67,6 @@ impl ByteQueue {
         Ok(())
     }
 
-    pub fn writable_tail(&mut self) -> &mut [u8] {
-        if self.remaining() == 0 {
-            return &mut [];
-        }
-        if self.tail == self.capacity() {
-            self.compact();
-        }
-        &mut self.buf[self.tail..]
-    }
-
-    pub fn commit(&mut self, n: usize) {
-        assert!(n <= self.capacity() - self.tail);
-        self.tail += n;
-    }
-
     fn make_tail_space(&mut self, needed: usize) {
         if self.capacity() - self.tail >= needed {
             return;
@@ -107,14 +95,6 @@ pub enum ReadResult {
     WouldBlock,
     Eof,
     EmptyInput,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReadToQueueResult {
-    Success { offset: usize, len: usize },
-    WouldBlock,
-    Eof,
-    NoSpace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,49 +135,9 @@ pub fn read<F: AsRawFd>(fd: &F, buf: &mut [u8]) -> std::io::Result<ReadResult> {
     }
 }
 
-pub fn read_to_queue<F: AsRawFd>(
-    fd: &F,
-    q: &mut ByteQueue,
-) -> std::io::Result<ReadToQueueResult> {
-    if q.remaining() == 0 {
-        return Ok(ReadToQueueResult::NoSpace);
-    }
-
-    let offset = q.len();
-    let dst = q.writable_tail();
-    if dst.is_empty() {
-        return Ok(ReadToQueueResult::NoSpace);
-    }
-
-    loop {
-        // SAFETY: `dst.as_mut_ptr()` has `dst.len()` writable bytes as `dst` is a live mutable
-        // slice; an invalid `fd` safely surfaces as a syscall error
-        let rv = unsafe { libc::read(fd.as_raw_fd(), dst.as_mut_ptr().cast(), dst.len()) };
-        match rv.cmp(&0) {
-            Ordering::Less => {
-                let e = std::io::Error::last_os_error();
-                match e.kind() {
-                    std::io::ErrorKind::Interrupted => {}
-                    std::io::ErrorKind::WouldBlock => return Ok(ReadToQueueResult::WouldBlock),
-                    _ => return Err(e),
-                }
-            }
-            Ordering::Equal => return Ok(ReadToQueueResult::Eof),
-            Ordering::Greater => {
-                let len = rv.cast_unsigned();
-                q.commit(len);
-                return Ok(ReadToQueueResult::Success { offset, len });
-            }
-        }
-    }
-}
-
-pub fn read_pty_to_queue<F: AsRawFd>(
-    fd: &F,
-    q: &mut ByteQueue,
-) -> std::io::Result<ReadToQueueResult> {
-    match read_to_queue(fd, q) {
-        Err(e) if is_pty_hangup(&e) => Ok(ReadToQueueResult::Eof),
+pub fn read_pty<F: AsRawFd>(fd: &F, buf: &mut [u8]) -> std::io::Result<ReadResult> {
+    match read(fd, buf) {
+        Err(e) if is_pty_hangup(&e) => Ok(ReadResult::Eof),
         other => other,
     }
 }
@@ -225,10 +165,45 @@ pub fn write<F: AsRawFd>(fd: &F, buf: &[u8]) -> std::io::Result<WriteResult> {
     }
 }
 
-pub fn drain_from_queue<F: AsRawFd>(
-    fd: &F,
-    q: &mut ByteQueue,
-) -> std::io::Result<WriteResult> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteAllKey {
+    Output,
+}
+
+pub fn write_all_until(
+    fd: BorrowedFd<'_>,
+    mut buf: &[u8],
+    deadline: Instant,
+) -> std::io::Result<bool> {
+    let fds = SelectFds {
+        read: Vec::new(),
+        write: vec![(WriteAllKey::Output, fd)],
+    };
+
+    while !buf.is_empty() {
+        match write(&fd, buf)? {
+            WriteResult::Success(n) => buf = &buf[n..],
+            WriteResult::WouldBlock => loop {
+                let Some(timeout) = deadline
+                    .checked_duration_since(Instant::now())
+                    .filter(|rem| !rem.is_zero())
+                else {
+                    return Ok(false);
+                };
+                match select(&fds, Some(timeout)) {
+                    Ok(ready) if ready.write.is_empty() => return Ok(false),
+                    Ok(_) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+            },
+            WriteResult::EmptyInput => unreachable!(),
+        }
+    }
+    Ok(true)
+}
+
+pub fn drain_from_queue<F: AsRawFd>(fd: &F, q: &mut ByteQueue) -> std::io::Result<WriteResult> {
     if q.is_empty() {
         return Ok(WriteResult::EmptyInput);
     }

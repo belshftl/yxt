@@ -180,6 +180,10 @@ pub fn encode_token(token: &Token, mode: TermMode) -> Option<Vec<u8>> {
 }
 
 fn encode_utf8(ch: char, mods: Mods) -> Option<Vec<u8>> {
+    // the shiftedness is already baked into the character and legacy has no way to report it
+    // separately so shift is meaningless here
+    let mods = mods & !Mods::SHIFT;
+
     if mods == Mods::EMPTY {
         let mut out = [0u8; 4];
         let s = ch.encode_utf8(&mut out);
@@ -238,13 +242,10 @@ fn encode_key(key: Key, mods: Mods, mode: TermMode) -> Option<Vec<u8>> {
 
     match key {
         // c0 + DEL
-        Key::Esc if mods == Mods::EMPTY => Some(vec![0x1b]),
-        Key::Enter if mods == Mods::EMPTY => Some(vec![b'\r']),
-        Key::Tab if mods == Mods::EMPTY => Some(vec![b'\t']),
-        Key::Backspace if mods == Mods::EMPTY => Some(vec![0x7f]),
+        Key::Esc | Key::Enter | Key::Tab | Key::Backspace => encode_c0(key, mods),
 
-        // deckpam keys
-        Key::Keypad(kp) if mode.deckpam => encode_deckpam(kp, param),
+        // keypad keys, in application (DECKPAM) or numeric mode
+        Key::Keypad(kp) => encode_keypad(kp, param, mode),
 
         // vt-style sequences (CSI N ~)
         Key::Insert => Some(encode_vt(2, param)),
@@ -287,13 +288,87 @@ fn encode_key(key: Key, mods: Mods, mode: TermMode) -> Option<Vec<u8>> {
     }
 }
 
+fn encode_c0(key: Key, mods: Mods) -> Option<Vec<u8>> {
+    let alt = (mods & Mods::ALT) != Mods::EMPTY;
+    let rest = mods & !Mods::ALT;
+
+    // backtab (shift + tab) is separately encoded as CSI Z
+    if key == Key::Tab && !alt && rest == Mods::SHIFT {
+        return Some(b"\x1b[Z".to_vec());
+    }
+
+    let base: &[u8] = match key {
+        Key::Esc if rest == Mods::EMPTY => &[0x1b],
+        // ctrl+enter is plain CR, like ctrl+m
+        Key::Enter if rest == Mods::EMPTY || rest == Mods::CTRL => b"\r",
+        Key::Tab if rest == Mods::EMPTY => b"\t",
+        Key::Backspace if rest == Mods::EMPTY => &[0x7f],
+        Key::Backspace if rest == Mods::CTRL => &[0x08],
+        _ => return None,
+    };
+
+    if alt {
+        let mut out = vec![0x1b];
+        out.extend_from_slice(base);
+        Some(out)
+    } else {
+        Some(base.to_vec())
+    }
+}
+
+fn encode_keypad(kp: KeypadKey, param: u8, mode: TermMode) -> Option<Vec<u8>> {
+    if mode.deckpam
+        && let Some(bytes) = encode_deckpam(kp, param)
+    {
+        return Some(bytes);
+    }
+
+    // with numlock off keypad keys are reported as their corresponding edit/nav keys which carry
+    // modifiers just like the non-keypad counterparts do
+    match kp {
+        KeypadKey::Left => return Some(encode_cursor(b'D', param, mode)),
+        KeypadKey::Right => return Some(encode_cursor(b'C', param, mode)),
+        KeypadKey::Up => return Some(encode_cursor(b'A', param, mode)),
+        KeypadKey::Down => return Some(encode_cursor(b'B', param, mode)),
+        KeypadKey::Home => return Some(encode_cursor(b'H', param, mode)),
+        KeypadKey::End => return Some(encode_cursor(b'F', param, mode)),
+        KeypadKey::PageUp => return Some(encode_vt(5, param)),
+        KeypadKey::PageDown => return Some(encode_vt(6, param)),
+        KeypadKey::Insert => return Some(encode_vt(2, param)),
+        KeypadKey::Delete => return Some(encode_vt(3, param)),
+        KeypadKey::Begin => return Some(encode_begin(param)),
+        _ => {}
+    }
+
+    if param != 1 {
+        return None;
+    }
+    let b = match kp {
+        KeypadKey::Digit(n @ 0..=9) => b'0' + n,
+        KeypadKey::Decimal => b'.',
+        KeypadKey::Divide => b'/',
+        KeypadKey::Multiply => b'*',
+        KeypadKey::Subtract => b'-',
+        KeypadKey::Add => b'+',
+        KeypadKey::Enter => b'\r',
+        KeypadKey::Equal => b'=',
+        KeypadKey::Separator => b',',
+        _ => return None,
+    };
+    Some(vec![b])
+}
+
+fn encode_begin(param: u8) -> Vec<u8> {
+    if param == 1 {
+        b"\x1b[E".to_vec()
+    } else {
+        format!("\x1b[1;{param}E").into_bytes()
+    }
+}
+
 fn encode_deckpam(kp: KeypadKey, param: u8) -> Option<Vec<u8>> {
     if kp == KeypadKey::Begin {
-        if param == 1 {
-            Some(b"\x1b[E".to_vec())
-        } else {
-            Some(format!("\x1b[1;{param}E").into_bytes())
-        }
+        Some(encode_begin(param))
     } else {
         if param != 1 {
             return None;
@@ -488,14 +563,33 @@ mod tests {
     }
 
     #[test]
-    fn encodes_keypad_only_when_deckpam() {
+    fn encodes_keypad_as_text_when_not_deckpam() {
         assert_eq!(
             encode_token(
                 &Token::press_key(Key::Keypad(KeypadKey::Digit(0)), Mods::EMPTY),
                 mode(false, false),
             ),
+            Some(b"0".to_vec()),
+        );
+        assert_eq!(
+            encode_token(
+                &Token::press_key(Key::Keypad(KeypadKey::Add), Mods::EMPTY),
+                mode(false, false),
+            ),
+            Some(b"+".to_vec()),
+        );
+        // a modified keypad key has no legacy text encoding
+        assert_eq!(
+            encode_token(
+                &Token::press_key(Key::Keypad(KeypadKey::Digit(0)), Mods::CTRL),
+                mode(false, false),
+            ),
             None,
         );
+    }
+
+    #[test]
+    fn encodes_keypad_when_deckpam() {
         assert_eq!(
             encode_token(
                 &Token::press_key(Key::Keypad(KeypadKey::Digit(0)), Mods::EMPTY),
@@ -513,13 +607,13 @@ mod tests {
     }
 
     #[test]
-    fn encodes_keypad_begin_only_when_deckpam() {
+    fn encodes_keypad_begin_in_both_keypad_modes() {
         assert_eq!(
             encode_token(
                 &Token::press_key(Key::Keypad(KeypadKey::Begin), Mods::EMPTY),
                 mode(false, false),
             ),
-            None,
+            Some(b"\x1b[E".to_vec()),
         );
         assert_eq!(
             encode_token(
@@ -534,6 +628,105 @@ mod tests {
                 mode(false, true),
             ),
             Some(b"\x1b[1;5E".to_vec()),
+        );
+    }
+
+    #[test]
+    fn encodes_cursor_keypad_keys_like_their_normal_counterparts() {
+        assert_eq!(
+            encode_token(
+                &Token::press_key(Key::Keypad(KeypadKey::Left), Mods::EMPTY),
+                mode(false, false),
+            ),
+            Some(b"\x1b[D".to_vec()),
+        );
+        assert_eq!(
+            encode_token(
+                &Token::press_key(Key::Keypad(KeypadKey::Left), Mods::CTRL),
+                mode(false, true),
+            ),
+            Some(b"\x1b[1;5D".to_vec()),
+        );
+        assert_eq!(
+            encode_token(
+                &Token::press_key(Key::Keypad(KeypadKey::Delete), Mods::EMPTY),
+                mode(false, true),
+            ),
+            Some(b"\x1b[3~".to_vec()),
+        );
+    }
+
+    #[test]
+    fn shift_is_implied_by_the_character_itself() {
+        let m = mode(false, false);
+
+        assert_eq!(
+            encode_token(&Token::press_utf8('@', Mods::SHIFT), m),
+            Some(b"@".to_vec()),
+        );
+        assert_eq!(
+            encode_token(&Token::press_utf8('A', Mods::SHIFT), m),
+            Some(b"A".to_vec()),
+        );
+        assert_eq!(
+            encode_token(&Token::press_utf8('a', Mods::SHIFT | Mods::CTRL), m),
+            Some(vec![0x01]),
+        );
+        assert_eq!(
+            encode_token(&Token::press_utf8('a', Mods::SHIFT | Mods::ALT), m),
+            Some(b"\x1ba".to_vec()),
+        );
+    }
+
+    #[test]
+    fn encodes_modified_c0_keys() {
+        let m = mode(false, false);
+
+        assert_eq!(
+            encode_token(&Token::press_key(Key::Tab, Mods::SHIFT), m),
+            Some(b"\x1b[Z".to_vec()),
+        );
+        assert_eq!(
+            encode_token(&Token::press_key(Key::Tab, Mods::ALT), m),
+            Some(b"\x1b\t".to_vec()),
+        );
+        assert_eq!(
+            encode_token(&Token::press_key(Key::Esc, Mods::ALT), m),
+            Some(b"\x1b\x1b".to_vec()),
+        );
+        assert_eq!(
+            encode_token(&Token::press_key(Key::Enter, Mods::CTRL), m),
+            Some(b"\r".to_vec()),
+        );
+        assert_eq!(
+            encode_token(&Token::press_key(Key::Enter, Mods::ALT), m),
+            Some(b"\x1b\r".to_vec()),
+        );
+        assert_eq!(
+            encode_token(&Token::press_key(Key::Backspace, Mods::CTRL), m),
+            Some(vec![0x08]),
+        );
+        assert_eq!(
+            encode_token(&Token::press_key(Key::Backspace, Mods::ALT), m),
+            Some(b"\x1b\x7f".to_vec()),
+        );
+    }
+
+    #[test]
+    fn drops_c0_keys_with_mods_legacy_cant_encode() {
+        let m = mode(false, false);
+
+        assert_eq!(
+            encode_token(&Token::press_key(Key::Tab, Mods::CTRL), m),
+            None,
+        );
+        assert_eq!(
+            encode_token(&Token::press_key(Key::Esc, Mods::CTRL), m),
+            None,
+        );
+        assert_eq!(
+            encode_token(&Token::press_key(Key::Tab, Mods::SHIFT | Mods::ALT), m),
+            None,
         );
     }
 

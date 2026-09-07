@@ -47,6 +47,71 @@ pub enum Key {
     IsoLevel5Shift,
 }
 
+impl Key {
+    pub fn is_legacy_reportable(self) -> bool {
+        match self {
+            Self::Esc
+            | Self::Enter
+            | Self::Tab
+            | Self::Backspace
+            | Self::Insert
+            | Self::Delete
+            | Self::Home
+            | Self::End
+            | Self::PageUp
+            | Self::PageDown
+            | Self::Arrow(_) => true,
+
+            Self::Function(n) => (1..=12).contains(&n),
+
+            // the numeric keypad is reportable with DECKPAM but the nav ones (numlock off)
+            // only have kitty codepoints
+            Self::Keypad(kp) => match kp {
+                KeypadKey::Digit(_)
+                | KeypadKey::Decimal
+                | KeypadKey::Divide
+                | KeypadKey::Multiply
+                | KeypadKey::Subtract
+                | KeypadKey::Add
+                | KeypadKey::Enter
+                | KeypadKey::Equal
+                | KeypadKey::Separator
+                | KeypadKey::Begin => true,
+
+                KeypadKey::Left
+                | KeypadKey::Right
+                | KeypadKey::Up
+                | KeypadKey::Down
+                | KeypadKey::PageUp
+                | KeypadKey::PageDown
+                | KeypadKey::Home
+                | KeypadKey::End
+                | KeypadKey::Insert
+                | KeypadKey::Delete => false,
+            },
+
+            Self::CapsLock
+            | Self::ScrollLock
+            | Self::NumLock
+            | Self::PrintScreen
+            | Self::Pause
+            | Self::Menu
+            | Self::Media(_)
+            | Self::ModifierKey(_)
+            | Self::IsoLevel3Shift
+            | Self::IsoLevel5Shift => false,
+        }
+    }
+
+    pub fn required_protocol(self) -> Protocol {
+        if self.is_legacy_reportable() {
+            Protocol::Legacy
+        } else {
+            Protocol::Kitty
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
     Left,
@@ -132,6 +197,14 @@ impl Mods {
     pub fn raw(self) -> u16 {
         self.0
     }
+
+    pub fn required_protocol(self) -> Protocol {
+        if (self & (Self::SUPER | Self::HYPER)) == Self::EMPTY {
+            Protocol::Legacy
+        } else {
+            Protocol::Kitty
+        }
+    }
 }
 
 impl std::ops::Not for Mods {
@@ -172,6 +245,53 @@ pub enum KeyEventKind {
     Press,
     Repeat,
     Release,
+}
+
+// ================================================================================================
+// protocol
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Protocol {
+    Legacy,
+    Kitty,
+}
+
+impl Protocol {
+    pub const ALL: &'static [Self] = &[Self::Legacy, Self::Kitty];
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "legacy" => Some(Self::Legacy),
+            "kitty" => Some(Self::Kitty),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Kitty => "kitty",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProtocolVerb {
+    Want,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProtocolRequest {
+    pub verb: ProtocolVerb,
+    pub protocol: Protocol,
+}
+
+impl Default for ProtocolRequest {
+    fn default() -> Self {
+        Self {
+            verb: ProtocolVerb::Want,
+            protocol: Protocol::Legacy,
+        }
+    }
 }
 
 // ================================================================================================
@@ -429,6 +549,7 @@ pub struct Service {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub options: Options,
+    pub protocol: ProtocolRequest,
     pub groups: GroupTable,
     pub mappings: Vec<Mapping>,
     pub services: Vec<Service>,

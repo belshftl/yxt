@@ -8,13 +8,43 @@ use super::options::Options;
 use crate::model::{
     Action, CharPair, CommandSpec, Config, DefineGroupError, Direction, Event, GroupId, GroupTable,
     InheritToken, Key, KeyPattern, KeypadKey, Mapping, MappingAttrs, MediaKey, ModifierKey, Mods,
-    ModsPattern, PayloadKind, Service, Signal, Source, Target, Token, TokenPattern,
+    ModsPattern, PayloadKind, Protocol, ProtocolRequest, ProtocolVerb, Service, Signal, Source,
+    Target, Token, TokenPattern,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LoweredCharPair {
     pair: CharPair,
     default_mods: Mods,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProtocolNeed {
+    protocol: Protocol,
+    span: Span,
+}
+
+impl ProtocolNeed {
+    fn of(protocol: Protocol, span: Span) -> Option<Self> {
+        (protocol > Protocol::Legacy).then_some(Self { protocol, span })
+    }
+
+    fn max(first: Option<Self>, second: Option<Self>) -> Option<Self> {
+        match (first, second) {
+            (Some(first), Some(second)) => Some(if second.protocol > first.protocol {
+                second
+            } else {
+                first
+            }),
+            (first, second) => first.or(second),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ModsAlt {
+    mods: Mods,
+    need: Option<ProtocolNeed>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +88,28 @@ pub enum ErrorKind {
 
     #[error("command cannot be empty")]
     EmptyCommand,
+
+    #[error("unknown protocol verb '{verb}'")]
+    UnknownProtocolVerb { verb: String },
+
+    #[error("protocol verb '{verb}' is not yet supported")]
+    UnsupportedProtocolVerb { verb: &'static str },
+
+    #[error("unknown protocol '{name}'")]
+    UnknownProtocol { name: String },
+
+    #[error("'@protocol' must come before any mappings")]
+    ProtocolAfterMappings,
+
+    #[error(
+        "\
+this needs the '{needs}' protocol, whereas only '{have}' is specified; \
+add '@protocol want {needs}' before any mappings"
+    )]
+    SourceNeedsProtocol {
+        needs: &'static str,
+        have: &'static str,
+    },
 
     #[error("unknown definition kind '{kind}'")]
     UnknownDefinition { kind: String },
@@ -169,6 +221,7 @@ pub struct ConfigError {
 #[derive(Debug, Default)]
 pub struct ConfigBuilder {
     options: Options,
+    protocol: ProtocolRequest,
     groups: GroupTable,
     mappings: Vec<Mapping>,
     services: Vec<Service>,
@@ -194,6 +247,7 @@ impl ConfigBuilder {
     pub fn finish(self) -> Config {
         Config {
             options: self.options,
+            protocol: self.protocol,
             groups: self.groups,
             mappings: self.mappings,
             services: self.services,
@@ -211,13 +265,67 @@ impl ConfigBuilder {
         span: Span,
     ) -> Result<(), ConfigError> {
         match name.as_str() {
-            "protocol" => todo!(),
+            "protocol" => self.apply_protocol(&args, span),
             "service" => self.apply_service(args, span),
             _ => Err(ConfigError {
                 kind: ErrorKind::UnknownDirective { name },
                 span,
             }),
         }
+    }
+
+    fn apply_protocol(&mut self, args: &[Expr], span: Span) -> Result<(), ConfigError> {
+        if !self.mappings.is_empty() {
+            return Err(ConfigError {
+                kind: ErrorKind::ProtocolAfterMappings,
+                span,
+            });
+        }
+
+        let [verb, protocol] = args else {
+            return Err(ConfigError {
+                kind: ErrorKind::BadDirectiveArgs { kind: "protocol" },
+                span,
+            });
+        };
+        let (verb_name, verb_span) = expect_ident(verb).map_err(|()| ConfigError {
+            kind: ErrorKind::BadDirectiveArgs { kind: "protocol" },
+            span,
+        })?;
+        let (protocol_name, protocol_span) = expect_ident(protocol).map_err(|()| ConfigError {
+            kind: ErrorKind::BadDirectiveArgs { kind: "protocol" },
+            span,
+        })?;
+
+        let verb = match verb_name {
+            "want" => ProtocolVerb::Want,
+            "require" => {
+                return Err(ConfigError {
+                    kind: ErrorKind::UnsupportedProtocolVerb { verb: "require" },
+                    span: verb_span,
+                });
+            }
+            _ => {
+                return Err(ConfigError {
+                    kind: ErrorKind::UnknownProtocolVerb {
+                        verb: verb_name.to_owned(),
+                    },
+                    span: verb_span,
+                });
+            }
+        };
+
+        let protocol = Protocol::from_name(protocol_name).ok_or_else(|| ConfigError {
+            kind: ErrorKind::UnknownProtocol {
+                name: protocol_name.to_owned(),
+            },
+            span: protocol_span,
+        })?;
+
+        if protocol >= self.protocol.protocol {
+            self.protocol = ProtocolRequest { verb, protocol };
+        }
+        Ok(())
     }
 
     fn apply_service(&mut self, args: Vec<Expr>, span: Span) -> Result<(), ConfigError> {
@@ -322,7 +430,20 @@ impl ConfigBuilder {
             MappingOp::Right => (lhs, rhs),
             MappingOp::Left => (rhs, lhs),
         };
-        let from = self.lower_source(from_expr)?;
+        let (from, need) = self.lower_source(from_expr)?;
+
+        if let Some(need) = need
+            && need.protocol > self.protocol.protocol
+        {
+            return Err(ConfigError {
+                kind: ErrorKind::SourceNeedsProtocol {
+                    needs: need.protocol.name(),
+                    have: self.protocol.protocol.name(),
+                },
+                span: need.span,
+            });
+        }
+
         let to = self.lower_target(to_expr)?;
         let attrs = lower_mapping_attrs(attrs, &from)?;
         let required = to.requires_payload();
@@ -351,7 +472,7 @@ impl ConfigBuilder {
         }
     }
 
-    fn lower_source(&self, expr: Expr) -> Result<Source, ConfigError> {
+    fn lower_source(&self, expr: Expr) -> Result<(Source, Option<ProtocolNeed>), ConfigError> {
         let span = expr.span();
         let (name, args, call_span) = expect_call(expr).map_err(|()| ConfigError {
             kind: ErrorKind::UnknownEntity {
@@ -360,10 +481,10 @@ impl ConfigBuilder {
             span,
         })?;
         match name.as_str() {
-            "signal" => lower_signal_source(args, call_span),
-            "sockdata_utf8" => lower_sockdata_utf8_source(args, call_span),
+            "signal" => Ok((lower_signal_source(args, call_span)?, None)),
+            "sockdata_utf8" => Ok((lower_sockdata_utf8_source(args, call_span)?, None)),
             "key" => lower_key_source(args, call_span),
-            "group" => Ok(Source::Group(self.lower_group_id(args, call_span)?)),
+            "group" => Ok((Source::Group(self.lower_group_id(args, call_span)?), None)),
             "send_key" => Err(ConfigError {
                 kind: ErrorKind::SendTokenAsSource,
                 span,
@@ -490,7 +611,10 @@ fn lower_sockdata_utf8_source(args: Vec<Expr>, span: Span) -> Result<Source, Con
     Ok(Source::Event(Event::Sockdata(s.as_bytes().to_vec())))
 }
 
-fn lower_key_source(args: Vec<Expr>, span: Span) -> Result<Source, ConfigError> {
+fn lower_key_source(
+    args: Vec<Expr>,
+    span: Span,
+) -> Result<(Source, Option<ProtocolNeed>), ConfigError> {
     let mut args = args.into_iter();
     let Some(key_expr) = args.next() else {
         return Err(ConfigError {
@@ -498,9 +622,19 @@ fn lower_key_source(args: Vec<Expr>, span: Span) -> Result<Source, ConfigError> 
             span,
         });
     };
+    let key_span = key_expr.span();
     let (key, dfl) = lower_key_pattern_arg(key_expr, "key", span)?;
-    let mods = lower_mods_pattern(args.collect(), span, dfl)?;
-    Ok(Source::Token(TokenPattern::Key { key, mods }))
+    let key_need = match key {
+        KeyPattern::Named(key) => ProtocolNeed::of(key.required_protocol(), key_span),
+        KeyPattern::CharPair(_) => None, // regardless of protocol, chars are always just text
+    };
+
+    let (mods, mods_need) = lower_mods_pattern(args.collect(), span, dfl)?;
+
+    Ok((
+        Source::Token(TokenPattern::Key { key, mods }),
+        ProtocolNeed::max(key_need, mods_need),
+    ))
 }
 
 fn lower_send_key(args: Vec<Expr>, span: Span) -> Result<Target, ConfigError> {
@@ -767,19 +901,34 @@ fn lower_mod_alts(expr: Expr) -> Result<Mods, ConfigError> {
     }
 }
 
-fn lower_mods_pattern(args: Vec<Expr>, span: Span, dfl: Mods) -> Result<ModsPattern, ConfigError> {
+fn lower_mods_pattern(
+    args: Vec<Expr>,
+    span: Span,
+    dfl: Mods,
+) -> Result<(ModsPattern, Option<ProtocolNeed>), ConfigError> {
     match args.len() {
-        0 => Ok(ModsPattern::AnyOf(vec![dfl])),
+        0 => Ok((
+            ModsPattern::AnyOf(vec![dfl]),
+            ProtocolNeed::of(dfl.required_protocol(), span),
+        )),
         1 => {
             let expr = unparen(args.into_iter().next().unwrap());
             if let Expr::Ident { name, .. } = &expr
                 && name == "any"
             {
-                return Ok(ModsPattern::Any);
+                // `any` needs no particular protocol, and intentionally means "any effectively
+                // catchable modifier under the current protocol"
+                return Ok((ModsPattern::Any, None));
             }
             let mut alts = lower_mod_pat_alts(expr)?;
-            dedup_mods(&mut alts);
-            Ok(ModsPattern::AnyOf(alts))
+            dedup_mod_alts(&mut alts);
+            let need = alts
+                .iter()
+                .fold(None, |need, alt| ProtocolNeed::max(need, alt.need));
+            Ok((
+                ModsPattern::AnyOf(alts.iter().map(|alt| alt.mods).collect()),
+                need,
+            ))
         }
         _ => Err(ConfigError {
             kind: ErrorKind::TooManyModPatternArgs,
@@ -788,7 +937,7 @@ fn lower_mods_pattern(args: Vec<Expr>, span: Span, dfl: Mods) -> Result<ModsPatt
     }
 }
 
-fn lower_mod_pat_alts(expr: Expr) -> Result<Vec<Mods>, ConfigError> {
+fn lower_mod_pat_alts(expr: Expr) -> Result<Vec<ModsAlt>, ConfigError> {
     let expr = unparen(expr);
     match expr {
         Expr::Infix {
@@ -802,7 +951,10 @@ fn lower_mod_pat_alts(expr: Expr) -> Result<Vec<Mods>, ConfigError> {
             let mut out = Vec::new();
             for l in &lhs {
                 for r in &rhs {
-                    out.push(*l | *r);
+                    out.push(ModsAlt {
+                        mods: l.mods | r.mods,
+                        need: ProtocolNeed::max(l.need, r.need),
+                    });
                 }
             }
             Ok(out)
@@ -817,7 +969,13 @@ fn lower_mod_pat_alts(expr: Expr) -> Result<Vec<Mods>, ConfigError> {
             out.extend(lower_mod_pat_alts(*rhs)?);
             Ok(out)
         }
-        Expr::Ident { name, span } => Ok(vec![lower_mod_name(&name, span, true)?]),
+        Expr::Ident { name, span } => {
+            let mods = lower_mod_name(&name, span, true)?;
+            Ok(vec![ModsAlt {
+                mods,
+                need: ProtocolNeed::of(mods.required_protocol(), span),
+            }])
+        }
         _ => Err(ConfigError {
             kind: ErrorKind::BadMods,
             span: expr.span(),
@@ -1055,6 +1213,13 @@ fn expect_call(expr: Expr) -> Result<(String, Vec<Expr>, Span), ()> {
     }
 }
 
+fn expect_ident(expr: &Expr) -> Result<(&str, Span), ()> {
+    match expr {
+        Expr::Ident { name, span } => Ok((name.as_str(), *span)),
+        _ => Err(()),
+    }
+}
+
 fn expect_one_string(args: Vec<Expr>) -> Result<String, ()> {
     let mut args = args.into_iter();
 
@@ -1080,10 +1245,10 @@ fn unparen(mut expr: Expr) -> Expr {
     expr
 }
 
-fn dedup_mods(values: &mut Vec<Mods>) {
-    let mut out = Vec::new();
+fn dedup_mod_alts(values: &mut Vec<ModsAlt>) {
+    let mut out: Vec<ModsAlt> = Vec::new();
     for value in values.drain(..) {
-        if !out.contains(&value) {
+        if !out.iter().any(|kept| kept.mods == value.mods) {
             out.push(value);
         }
     }
@@ -1185,6 +1350,10 @@ mod tests {
             args,
             span: sp(),
         }
+    }
+
+    fn protocol_want(name: &str) -> Stmt {
+        directive("protocol", vec![ident("want"), ident(name)])
     }
 
     fn define(kind: &str, args: Vec<Expr>) -> Stmt {
@@ -1437,8 +1606,186 @@ mod tests {
     }
 
     #[test]
+    fn protocol_directive_sets_the_request() {
+        let config = finish(vec![protocol_want("kitty")]).unwrap();
+
+        assert_eq!(
+            config.protocol,
+            ProtocolRequest {
+                verb: ProtocolVerb::Want,
+                protocol: Protocol::Kitty,
+            },
+        );
+    }
+
+    #[test]
+    fn default_protocol_request_is_want_legacy() {
+        let config = finish(vec![]).unwrap();
+
+        assert_eq!(
+            config.protocol,
+            ProtocolRequest {
+                verb: ProtocolVerb::Want,
+                protocol: Protocol::Legacy,
+            },
+        );
+    }
+
+    #[test]
+    fn highest_rank_protocol_request_wins() {
+        for order in [["kitty", "legacy"], ["legacy", "kitty"]] {
+            let config = finish(order.map(protocol_want).to_vec()).unwrap();
+
+            assert_eq!(
+                config.protocol.protocol,
+                Protocol::Kitty,
+                "order: {order:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn protocol_after_any_mappings_is_rejected() {
+        let e = err(vec![
+            map(
+                call("key", vec![ident("f1")]),
+                call("send_key", vec![ch('x')]),
+            ),
+            protocol_want("kitty"),
+        ]);
+
+        assert!(matches!(e, ErrorKind::ProtocolAfterMappings));
+    }
+
+    #[test]
+    fn require_is_reserved_but_unsupported() {
+        let e = err(vec![directive(
+            "protocol",
+            vec![ident("require"), ident("kitty")],
+        )]);
+
+        assert!(matches!(
+            e,
+            ErrorKind::UnsupportedProtocolVerb { verb } if verb == "require"
+        ));
+    }
+
+    #[test]
+    fn unknown_protocol_verbs_and_names_are_rejected() {
+        let e = err(vec![directive(
+            "protocol",
+            vec![ident("demand"), ident("kitty")],
+        )]);
+        assert!(matches!(e, ErrorKind::UnknownProtocolVerb { verb } if verb == "demand"));
+
+        let e = err(vec![protocol_want("modifyOtherKeys")]);
+        assert!(matches!(e, ErrorKind::UnknownProtocol { name } if name == "modifyOtherKeys"));
+    }
+
+    #[test]
+    fn bad_protocol_directive_args_are_rejected() {
+        let e = err(vec![directive("protocol", vec![ident("want")])]);
+        assert!(matches!(
+            e,
+            ErrorKind::BadDirectiveArgs { kind } if kind == "protocol"
+        ));
+
+        let e = err(vec![directive(
+            "protocol",
+            vec![ident("want"), string("kitty")],
+        )]);
+        assert!(matches!(
+            e,
+            ErrorKind::BadDirectiveArgs { kind } if kind == "protocol"
+        ));
+    }
+
+    #[test]
+    fn sources_needing_a_higher_rank_protocol_are_rejected() {
+        let e = err(vec![map(
+            call("key", vec![infer_unshifted('r'), ident("super")]),
+            call("exec", vec![string("true")]),
+        )]);
+        assert!(matches!(
+            e,
+            ErrorKind::SourceNeedsProtocol {
+                needs: "kitty",
+                have: "legacy"
+            }
+        ));
+
+        let e = err(vec![map(
+            call("key", vec![ident("left_super")]),
+            call("exec", vec![string("true")]),
+        )]);
+        assert!(matches!(
+            e,
+            ErrorKind::SourceNeedsProtocol {
+                needs: "kitty",
+                have: "legacy"
+            }
+        ));
+    }
+
+    #[test]
+    fn sources_needing_a_higher_rank_protocol_are_allowed_if_protocol_requested() {
+        finish(vec![
+            protocol_want("kitty"),
+            map(
+                call("key", vec![infer_unshifted('r'), ident("super")]),
+                call("exec", vec![string("true")]),
+            ),
+            map(
+                call("key", vec![ident("left_super")]),
+                call("exec", vec![string("true")]),
+            ),
+        ])
+        .unwrap();
+    }
+
+    #[test]
+    fn every_alternative_must_be_reachable_under_the_protocol() {
+        let e = err(vec![map(
+            call(
+                "key",
+                vec![infer_unshifted('r'), or(ident("shift"), ident("super"))],
+            ),
+            call("exec", vec![string("true")]),
+        )]);
+
+        assert!(matches!(
+            e,
+            ErrorKind::SourceNeedsProtocol {
+                needs: "kitty",
+                have: "legacy"
+            }
+        ));
+    }
+
+    #[test]
+    fn the_any_modifier_pattern_has_no_protocol_requirement() {
+        finish(vec![map(
+            call("key", vec![infer_unshifted('r'), ident("any")]),
+            call("exec", vec![string("true")]),
+        )])
+        .unwrap();
+    }
+
+    #[test]
+    fn targets_are_not_gated_by_protocol() {
+        // sending a key the child's protocol cannot express is lossy at encode time, not an error
+        finish(vec![map(
+            call("key", vec![ident("f1")]),
+            call("send_key", vec![ident("f13")]),
+        )])
+        .unwrap();
+    }
+
+    #[test]
     fn key_accepts_known_key_names_and_function_keys() {
         let config = finish(vec![
+            // f35 is only reportable under kitty
+            protocol_want("kitty"),
             map(
                 call("key", vec![ident("esc")]),
                 call("send_key", vec![ch('a')]),
@@ -1783,16 +2130,19 @@ mod tests {
 
     #[test]
     fn key_mod_pat_bitand_binds_inside_or() {
-        let config = finish(vec![map(
-            call(
-                "key",
-                vec![
-                    ident("f1"),
-                    or(bitand(ident("shift"), ident("ctrl")), ident("super")),
-                ],
+        let config = finish(vec![
+            protocol_want("kitty"),
+            map(
+                call(
+                    "key",
+                    vec![
+                        ident("f1"),
+                        or(bitand(ident("shift"), ident("ctrl")), ident("super")),
+                    ],
+                ),
+                call("send_key", vec![ch('x')]),
             ),
-            call("send_key", vec![ch('x')]),
-        )])
+        ])
         .unwrap();
         assert_eq!(
             source_mods(&config.mappings[0].from),
@@ -1802,16 +2152,19 @@ mod tests {
 
     #[test]
     fn key_mod_pat_can_distribute_bitand_over_or() {
-        let config = finish(vec![map(
-            call(
-                "key",
-                vec![
-                    ident("f1"),
-                    bitand(ident("ctrl"), or(ident("shift"), ident("super"))),
-                ],
+        let config = finish(vec![
+            protocol_want("kitty"),
+            map(
+                call(
+                    "key",
+                    vec![
+                        ident("f1"),
+                        bitand(ident("ctrl"), or(ident("shift"), ident("super"))),
+                    ],
+                ),
+                call("send_key", vec![ch('x')]),
             ),
-            call("send_key", vec![ch('x')]),
-        )])
+        ])
         .unwrap();
         assert_eq!(
             source_mods(&config.mappings[0].from),

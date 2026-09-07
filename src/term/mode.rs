@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
-use crate::term::control::{self, ControlEvent, ControlScanner, CsiSeq};
+use crate::term::control::{self, ControlEvent, CsiSeq};
 use crate::term::query::QueriedTermMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,14 +9,6 @@ pub struct TermMode {
     pub decckm: bool,
     pub deckpam: bool,
     pub kitty_flags: u8,
-}
-
-impl TermMode {
-    pub const LEGACY: Self = Self {
-        decckm: false,
-        deckpam: false,
-        kitty_flags: 0,
-    };
 }
 
 const KITTY_STACK_LIMIT: usize = 64;
@@ -62,7 +54,6 @@ pub struct TerminalModeTracker {
     alt_screen: bool,
     main_kitty: KittyState,
     alt_kitty: KittyState,
-    scanner: ControlScanner,
 }
 
 impl TerminalModeTracker {
@@ -73,7 +64,6 @@ impl TerminalModeTracker {
             alt_screen: false,
             main_kitty: KittyState::new(),
             alt_kitty: KittyState::new(),
-            scanner: ControlScanner::default(),
         }
     }
 
@@ -102,17 +92,17 @@ impl TerminalModeTracker {
         }
     }
 
-    pub fn observe_child_output(&mut self, bytes: &[u8]) -> bool {
-        let old = self.mode();
-        for event in self.scanner.push(bytes) {
-            match event {
-                ControlEvent::Esc(b'=') => self.deckpam = true,
-                ControlEvent::Esc(b'>') => self.deckpam = false,
-                ControlEvent::Csi(csi) => self.apply_csi(csi.as_csi()),
-                _ => {}
-            }
+    pub fn alt_screen(&self) -> bool {
+        self.alt_screen
+    }
+
+    pub fn apply_event(&mut self, event: &ControlEvent) {
+        match event {
+            ControlEvent::Esc(b'=') => self.deckpam = true,
+            ControlEvent::Esc(b'>') => self.deckpam = false,
+            ControlEvent::Csi(csi) => self.apply_csi(csi.as_csi()),
+            _ => {}
         }
-        self.mode() != old
     }
 
     fn apply_csi(&mut self, csi: CsiSeq<'_>) {
@@ -220,7 +210,35 @@ impl Default for TerminalModeTracker {
 mod tests {
     use super::*;
 
+    use crate::term::control::ControlScanner;
     use crate::term::kitty;
+
+    // similar to what term::negotiate does
+    struct Observer {
+        tracker: TerminalModeTracker,
+        scanner: ControlScanner,
+    }
+
+    impl Observer {
+        fn new() -> Self {
+            Self {
+                tracker: TerminalModeTracker::new(),
+                scanner: ControlScanner::default(),
+            }
+        }
+
+        fn observe_child_output(&mut self, bytes: &[u8]) -> bool {
+            let old = self.tracker.mode();
+            for event in self.scanner.push(bytes) {
+                self.tracker.apply_event(&event);
+            }
+            self.tracker.mode() != old
+        }
+
+        fn mode(&self) -> TermMode {
+            self.tracker.mode()
+        }
+    }
 
     #[test]
     fn initial_mode_is_plain_legacy() {
@@ -238,7 +256,7 @@ mod tests {
 
     #[test]
     fn tracks_deckpam_and_deckpnm() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b="));
         assert!(tracker.mode().deckpam);
@@ -252,7 +270,7 @@ mod tests {
 
     #[test]
     fn tracks_deckpam_split_across_pushes() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(!tracker.observe_child_output(b"\x1b"));
         assert!(!tracker.mode().deckpam);
@@ -263,7 +281,7 @@ mod tests {
 
     #[test]
     fn tracks_decckm_private_mode_set_reset() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b[?1h"));
         assert!(tracker.mode().decckm);
@@ -274,7 +292,7 @@ mod tests {
 
     #[test]
     fn tracks_decckm_split_across_pushes() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(!tracker.observe_child_output(b"\x1b[?"));
         assert!(!tracker.mode().decckm);
@@ -285,7 +303,7 @@ mod tests {
 
     #[test]
     fn ignores_non_decckm_private_modes_except_alt_screen() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(!tracker.observe_child_output(b"\x1b[?25l"));
         assert_eq!(
@@ -300,7 +318,7 @@ mod tests {
 
     #[test]
     fn applies_multiple_dec_private_params() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b[?25;1h"));
         assert!(tracker.mode().decckm);
@@ -311,7 +329,7 @@ mod tests {
 
     #[test]
     fn ignores_csi_with_intermediates_for_dec_private_modes() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(!tracker.observe_child_output(b"\x1b[?1 h"));
         assert!(!tracker.mode().decckm);
@@ -319,7 +337,7 @@ mod tests {
 
     #[test]
     fn tracks_kitty_set_exact() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b[=5u"));
         assert_eq!(tracker.mode().kitty_flags, 5);
@@ -330,7 +348,7 @@ mod tests {
 
     #[test]
     fn tracks_kitty_set_with_explicit_mode_1() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b[=5;1u"));
         assert_eq!(tracker.mode().kitty_flags, 5);
@@ -338,7 +356,7 @@ mod tests {
 
     #[test]
     fn tracks_kitty_set_bits_mode_2() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b[=1u"));
         assert_eq!(tracker.mode().kitty_flags, 1);
@@ -349,7 +367,7 @@ mod tests {
 
     #[test]
     fn tracks_kitty_reset_bits_mode_3() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b[=7u"));
         assert_eq!(tracker.mode().kitty_flags, 7);
@@ -360,7 +378,7 @@ mod tests {
 
     #[test]
     fn ignores_unknown_kitty_set_mode() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b[=5u"));
         assert_eq!(tracker.mode().kitty_flags, 5);
@@ -371,7 +389,7 @@ mod tests {
 
     #[test]
     fn ignores_kitty_set_with_bad_flags() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(!tracker.observe_child_output(b"\x1b[=999u"));
         assert_eq!(tracker.mode().kitty_flags, 0);
@@ -379,7 +397,7 @@ mod tests {
 
     #[test]
     fn tracks_kitty_push_and_pop() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b[=1u"));
         assert_eq!(tracker.mode().kitty_flags, 1);
@@ -393,7 +411,7 @@ mod tests {
 
     #[test]
     fn kitty_push_without_flags_pushes_zero() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b[=5u"));
         assert_eq!(tracker.mode().kitty_flags, 5);
@@ -407,7 +425,7 @@ mod tests {
 
     #[test]
     fn kitty_pop_with_explicit_count() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b[=1u"));
         assert_eq!(tracker.mode().kitty_flags, 1);
@@ -424,7 +442,7 @@ mod tests {
 
     #[test]
     fn kitty_pop_past_empty_resets_to_zero() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b[=7u"));
         assert_eq!(tracker.mode().kitty_flags, 7);
@@ -435,7 +453,7 @@ mod tests {
 
     #[test]
     fn tracks_kitty_sequences_split_across_pushes() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(!tracker.observe_child_output(b"\x1b[="));
         assert_eq!(tracker.mode().kitty_flags, 0);
@@ -458,7 +476,7 @@ mod tests {
 
     #[test]
     fn tracks_main_and_alt_screen_kitty_stacks_separately() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b[=1u"));
         assert_eq!(tracker.mode().kitty_flags, 1);
@@ -479,7 +497,7 @@ mod tests {
     #[test]
     fn tracks_alt_screen_47_1047_1049() {
         for param in [47, 1047, 1049] {
-            let mut tracker = TerminalModeTracker::new();
+            let mut tracker = Observer::new();
 
             assert!(tracker.observe_child_output(b"\x1b[=1u"));
             assert_eq!(tracker.mode().kitty_flags, 1);
@@ -497,7 +515,7 @@ mod tests {
 
     #[test]
     fn alt_screen_switch_does_not_reset_deckpam_or_decckm() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(tracker.observe_child_output(b"\x1b="));
         assert!(tracker.observe_child_output(b"\x1b[?1h"));
@@ -523,7 +541,7 @@ mod tests {
 
     #[test]
     fn ignores_dcs_sos_osc_pm_apc_payloads() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(!tracker.observe_child_output(b"\x1bPpayload\x1b\\"));
         assert!(!tracker.observe_child_output(b"\x1bXpayload\x1b\\"));
@@ -542,7 +560,7 @@ mod tests {
 
     #[test]
     fn split_osc_does_not_mess_with_later_csi() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(!tracker.observe_child_output(b"\x1b]0;title"));
         assert!(!tracker.observe_child_output(b"\x07"));
@@ -553,7 +571,7 @@ mod tests {
 
     #[test]
     fn malformed_csi_is_ignored_and_scanner_recovers() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(!tracker.observe_child_output(b"\x1b[?1\x80"));
 
@@ -563,7 +581,7 @@ mod tests {
 
     #[test]
     fn c1_controls_are_not_tracked_by_default() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(!tracker.observe_child_output(b"\x9b?1h"));
         assert!(!tracker.mode().decckm);
@@ -574,7 +592,7 @@ mod tests {
 
     #[test]
     fn kitty_flag_constants_can_be_tracked() {
-        let mut tracker = TerminalModeTracker::new();
+        let mut tracker = Observer::new();
 
         assert!(
             tracker

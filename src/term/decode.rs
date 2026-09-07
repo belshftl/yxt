@@ -416,9 +416,15 @@ mod tests {
     use crate::model::{Direction, Key, KeyEventKind, Mods, Token};
     use crate::term::{kitty, mode::TermMode};
 
+    const LEGACY: TermMode = TermMode {
+        decckm: false,
+        deckpam: false,
+        kitty_flags: 0,
+    };
+
     fn cfg(esc_byte_is_partial_esc: bool) -> DecoderConfig {
         DecoderConfig {
-            mode: TermMode::LEGACY,
+            mode: LEGACY,
             esc_byte_is_partial_esc,
             partial_utf8_timeout: Duration::from_millis(10),
             partial_esc_timeout: Duration::from_millis(20),
