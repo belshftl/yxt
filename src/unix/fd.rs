@@ -216,7 +216,7 @@ fn duration_to_timeval(d: Duration) -> std::io::Result<libc::timeval> {
         )
     })?;
     let usec = libc::suseconds_t::try_from(usec)
-        .expect("subsec_nanos() should've returned a value in the range [0, 1_000_000_000]");
+        .expect("subsec_nanos() should've returned a value in the range [0, 999_999_999]");
     Ok(libc::timeval {
         tv_sec: sec,
         tv_usec: usec,

@@ -132,7 +132,7 @@ pub enum WriteToPtyResult {
     EmptyInput,
 }
 
-pub fn read<F: AsRawFd + ?Sized>(fd: &F, buf: &mut [u8]) -> std::io::Result<ReadResult> {
+pub fn read<F: AsRawFd>(fd: &F, buf: &mut [u8]) -> std::io::Result<ReadResult> {
     if buf.is_empty() {
         return Ok(ReadResult::EmptyInput);
     }
@@ -155,7 +155,7 @@ pub fn read<F: AsRawFd + ?Sized>(fd: &F, buf: &mut [u8]) -> std::io::Result<Read
     }
 }
 
-pub fn read_to_queue<F: AsRawFd + ?Sized>(
+pub fn read_to_queue<F: AsRawFd>(
     fd: &F,
     q: &mut ByteQueue,
 ) -> std::io::Result<ReadToQueueResult> {
@@ -192,7 +192,7 @@ pub fn read_to_queue<F: AsRawFd + ?Sized>(
     }
 }
 
-pub fn read_pty_to_queue<F: AsRawFd + ?Sized>(
+pub fn read_pty_to_queue<F: AsRawFd>(
     fd: &F,
     q: &mut ByteQueue,
 ) -> std::io::Result<ReadToQueueResult> {
@@ -202,7 +202,30 @@ pub fn read_pty_to_queue<F: AsRawFd + ?Sized>(
     }
 }
 
-pub fn drain_from_queue<F: AsRawFd + ?Sized>(
+pub fn write<F: AsRawFd>(fd: &F, buf: &[u8]) -> std::io::Result<WriteResult> {
+    if buf.is_empty() {
+        return Ok(WriteResult::EmptyInput);
+    }
+    loop {
+        // SAFETY: `buf.as_ptr()` has `buf.len()` readable bytes as `buf` is a live slice; an
+        // invalid `fd` safely surfaces as a syscall error
+        let rv = unsafe { libc::write(fd.as_raw_fd(), buf.as_ptr().cast(), buf.len()) };
+        match rv.cmp(&0) {
+            Ordering::Less => {
+                let e = std::io::Error::last_os_error();
+                match e.kind() {
+                    std::io::ErrorKind::Interrupted => {}
+                    std::io::ErrorKind::WouldBlock => return Ok(WriteResult::WouldBlock),
+                    _ => return Err(e),
+                }
+            }
+            Ordering::Equal => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero)),
+            Ordering::Greater => return Ok(WriteResult::Success(rv.cast_unsigned())),
+        }
+    }
+}
+
+pub fn drain_from_queue<F: AsRawFd>(
     fd: &F,
     q: &mut ByteQueue,
 ) -> std::io::Result<WriteResult> {
@@ -234,7 +257,7 @@ pub fn drain_from_queue<F: AsRawFd + ?Sized>(
     }
 }
 
-pub fn drain_to_pty_from_queue<F: AsRawFd + ?Sized>(
+pub fn drain_to_pty_from_queue<F: AsRawFd>(
     fd: &F,
     q: &mut ByteQueue,
 ) -> std::io::Result<WriteToPtyResult> {

@@ -267,7 +267,7 @@ pub fn encode_token(token: &Token, kitty_flags: u8) -> Option<Vec<u8>> {
     let report_text = (kitty_flags & FLAG_REPORT_ASSOCIATED_TEXT) != 0;
 
     let (code, mods, kind) = match token {
-        Token::Utf8 { ch, mods, kind } => (*ch as u32, *mods, *kind),
+        Token::Utf8 { ch, mods, kind } => (u32::from(*ch), *mods, *kind),
         Token::Key { key, mods, kind } => (key_to_kitty_codepoint(*key)?, *mods, *kind),
     };
     let effective_kind = if report_type {

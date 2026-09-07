@@ -1,6 +1,5 @@
 - print include chain in diagnostics for non-root files
 - group cycle / include cycle formatting
-- active mode query on startup
 - start `@protocol` plumbing
 - reserve `unsafe!` for things like `raw_passthrough!` and later raw byte/seq ops
 - logfile / live debug trace

@@ -7,3 +7,4 @@ pub mod encode;
 pub mod kitty;
 pub mod legacy;
 pub mod mode;
+pub mod query;

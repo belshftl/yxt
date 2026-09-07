@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
-#![deny(unsafe_op_in_unsafe_fn)]
-#![deny(clippy::borrow_as_ptr)]
-#![deny(clippy::undocumented_unsafe_blocks)]
 #![warn(clippy::pedantic)]
+#![forbid(unsafe_op_in_unsafe_fn)]
+#![forbid(clippy::as_conversions)]
+#![forbid(clippy::borrow_as_ptr)]
+#![forbid(clippy::undocumented_unsafe_blocks)]
 #![allow(clippy::option_option)]
 #![allow(clippy::similar_names)]
 #![allow(clippy::struct_excessive_bools)]
@@ -33,6 +34,7 @@ use crate::runtime::router::{RouteEffect, RouteInput, Router};
 use crate::term::decode::{Decoded, Decoder, DecoderConfig};
 use crate::term::encode::Encoder;
 use crate::term::mode::{TermMode, TerminalModeTracker};
+use crate::term::query::query_term_mode;
 use crate::unix::child::{
     ChildEnv, ChildExt, ChildSpawnOptions, ChildStdio, OsCommandSpec, PtyChild,
     PtyChildSpawnOptions, spawn_pty_attached,
@@ -41,7 +43,7 @@ use crate::unix::fd::{NonblockingFd, ReadyFds, SelectFds, select};
 use crate::unix::pledge::try_pledge;
 use crate::unix::signal::{SignalError, SignalRegistry};
 use crate::unix::sock::{ControlSock, default_sock_path};
-use crate::unix::tty::{RawTerminal, get_winsize, set_winsize};
+use crate::unix::tty::{RawTerminal, check_terminals, get_winsize, set_winsize};
 
 const SENSITIVE_CHILD_BASENAMES: &[&str] = &[
     // privilege/auth
@@ -127,6 +129,9 @@ this program internally tracks/routes terminal input, which you probably don't w
 run with --allow-sensitive-child to run anyways"
     )]
     SensitiveChild(String),
+
+    #[error("stdin and stdout must be terminals, and must both be the same terminal")]
+    NotOneTerminal,
 
     #[error(transparent)]
     ControlSock(#[from] crate::unix::sock::ControlSockError),
@@ -314,6 +319,13 @@ try '--help' for more info
         return Err(AppError::SensitiveChild(child_name.to_owned()));
     }
 
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+
+    if !check_terminals(&stdin, &stdout)? {
+        return Err(AppError::NotOneTerminal);
+    }
+
     let sock_path = cli.sock.map_or_else(|| default_sock_path("yxt"), Ok)?;
     let sock = ControlSock::bind(&sock_path, 8192)?;
 
@@ -338,8 +350,6 @@ try '--help' for more info
     let mut actions = ActionManager::new(child_opts.clone());
     let mut services = ServiceManager::start(&config.services, &child_opts, SHUTDOWN_GRACE)?;
 
-    let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
     let winsize = get_winsize(&stdin).ok();
 
     let child_spec = OsCommandSpec::Exec { argv: cli.command };
@@ -371,6 +381,8 @@ try '--help' for more info
         }
     }
 
+    let queried = query_term_mode(&stdin, &stdout, Duration::from_millis(config.options.mode_query_timeout_ms))?;
+    let mut tracker = TerminalModeTracker::from_queried(queried);
     let mut decoder = Decoder::new(DecoderConfig {
         mode: TermMode::LEGACY,
         esc_byte_is_partial_esc: config.options.esc_byte_is_partial_esc,
@@ -380,7 +392,6 @@ try '--help' for more info
         max_pending_bytes: config.options.max_pending_decoder_bytes,
     });
     let mut encoder = Encoder::new(TermMode::LEGACY);
-    let mut tracker = TerminalModeTracker::new();
     let router = Router::new(&config);
 
     let mut stdin_buf = vec![0u8; 8192].into_boxed_slice();

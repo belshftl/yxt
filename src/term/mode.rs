@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::term::control::{self, ControlEvent, ControlScanner, CsiSeq};
+use crate::term::query::QueriedTermMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TermMode {
@@ -74,6 +75,23 @@ impl TerminalModeTracker {
             alt_kitty: KittyState::new(),
             scanner: ControlScanner::default(),
         }
+    }
+
+    pub fn from_queried(query: QueriedTermMode) -> Self {
+        let mut tracker = Self::new();
+        if let Some(decckm) = query.decckm {
+            tracker.decckm = decckm;
+        }
+        if let Some(deckpam) = query.deckpam {
+            tracker.deckpam = deckpam;
+        }
+        if let Some(alt_screen) = query.alt_screen {
+            tracker.alt_screen = alt_screen;
+        }
+        if let Some(flags) = query.kitty_flags {
+            tracker.active_kitty_mut().flags = flags;
+        }
+        tracker
     }
 
     pub fn mode(&self) -> TermMode {

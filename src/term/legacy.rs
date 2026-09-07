@@ -17,7 +17,7 @@ pub fn decode_c0(byte: u8) -> Option<Token> {
         0x08 | 0x7f => Some(Token::press_key(Key::Backspace, Mods::EMPTY)),
         1..=31 => {
             let table = b"abcdefghijklmnopqrstuvwxyz[\\]^_";
-            let ch = table[(byte - 1) as usize] as char;
+            let ch = char::from(table[usize::from(byte - 1)]);
             Some(Token::press_utf8(ch, Mods::CTRL))
         }
         _ => None,
@@ -192,7 +192,10 @@ fn encode_utf8(ch: char, mods: Mods) -> Option<Vec<u8>> {
             c = c.to_ascii_uppercase();
         }
         if ('@'..='_').contains(&c) {
-            return Some(vec![(c as u8) - b'@']);
+            let Ok(byte) = u8::try_from(c) else {
+                unreachable!()
+            };
+            return Some(vec![byte - b'@']);
         }
     }
 
@@ -339,7 +342,7 @@ fn encode_cursor(final_byte: u8, param: u8, mode: TermMode) -> Vec<u8> {
             vec![0x1b, b'[', final_byte]
         }
     } else {
-        format!("\x1b[1;{}{}", param, final_byte as char).into_bytes()
+        format!("\x1b[1;{}{}", param, char::from(final_byte)).into_bytes()
     }
 }
 

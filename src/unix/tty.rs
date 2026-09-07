@@ -1,12 +1,43 @@
 // SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
-use libc::{termios, winsize};
+use libc::{stat, termios, winsize};
 use std::ffi::CStr;
-use std::io::Error;
+use std::io::{Error, IsTerminal};
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Mutex;
+
+pub fn check_terminals<F: AsFd, G: AsFd>(
+    input: &F,
+    output: &G,
+) -> std::io::Result<bool> {
+    let input = input.as_fd();
+    let output = output.as_fd();
+    if !input.is_terminal() || !output.is_terminal() {
+        return Ok(false);
+    }
+
+    let mut input_stat = MaybeUninit::<stat>::uninit();
+    // SAFETY: `input_stat.as_mut_ptr()` is valid for writes of `stat` and gets initialized by
+    // `fstat` on success; invalid `fd` is reported as a syscall error
+    if unsafe { libc::fstat(input.as_raw_fd(), input_stat.as_mut_ptr()) } < 0 {
+        return Err(Error::last_os_error());
+    }
+    // SAFETY: `input_stat` has been initialized by a successful `fstat`
+    let input_stat = unsafe { input_stat.assume_init() };
+
+    let mut output_stat = MaybeUninit::<stat>::uninit();
+    // SAFETY: `output_stat.as_mut_ptr()` is valid for writes of `stat` and gets initialized by
+    // `fstat` on success; invalid `fd` is reported as a syscall error
+    if unsafe { libc::fstat(output.as_raw_fd(), output_stat.as_mut_ptr()) } < 0 {
+        return Err(Error::last_os_error());
+    }
+    // SAFETY: `output_stat` has been initialized by a successful `fstat`
+    let output_stat = unsafe { output_stat.assume_init() };
+
+    Ok(input_stat.st_dev == output_stat.st_dev && input_stat.st_ino == output_stat.st_ino)
+}
 
 #[derive(Debug)]
 pub struct RawTerminal {
@@ -16,7 +47,7 @@ pub struct RawTerminal {
 }
 
 impl RawTerminal {
-    pub fn enter<F: AsFd + ?Sized>(fd: &F) -> std::io::Result<Self> {
+    pub fn enter<F: AsFd>(fd: &F) -> std::io::Result<Self> {
         let fd = dup_fd(fd)?;
         let raw_fd = fd.as_raw_fd();
 
@@ -57,7 +88,7 @@ impl RawTerminal {
 impl Drop for RawTerminal {
     fn drop(&mut self) {
         // swallow error
-        let _ = self.restore();
+        _ = self.restore();
     }
 }
 
@@ -84,7 +115,7 @@ fn tcsetattr_raw(fd: RawFd, termios: &termios) -> std::io::Result<()> {
     }
 }
 
-pub fn dup_fd<F: AsFd + ?Sized>(fd: &F) -> std::io::Result<OwnedFd> {
+pub fn dup_fd<F: AsFd>(fd: &F) -> std::io::Result<OwnedFd> {
     // SAFETY: `fd.as_fd().as_raw_fd()` is a valid borrowed fd for the duration of this call, `dup`
     // does not take ownership of it
     let raw = unsafe { libc::dup(fd.as_fd().as_raw_fd()) };
@@ -97,7 +128,7 @@ pub fn dup_fd<F: AsFd + ?Sized>(fd: &F) -> std::io::Result<OwnedFd> {
     }
 }
 
-pub fn get_winsize<F: AsFd + ?Sized>(fd: &F) -> std::io::Result<winsize> {
+pub fn get_winsize<F: AsFd>(fd: &F) -> std::io::Result<winsize> {
     let mut ws = MaybeUninit::<winsize>::uninit();
 
     // SAFETY: `ws.as_mut_ptr()` is valid for writes of `winsize` and gets initialized by
@@ -111,7 +142,7 @@ pub fn get_winsize<F: AsFd + ?Sized>(fd: &F) -> std::io::Result<winsize> {
     }
 }
 
-pub fn set_winsize<F: AsFd + ?Sized>(fd: &F, ws: winsize) -> std::io::Result<()> {
+pub fn set_winsize<F: AsFd>(fd: &F, ws: winsize) -> std::io::Result<()> {
     // SAFETY: `fd.as_fd().as_raw_fd()` is a valid borrowed fd for the duration of this call; `ws`
     // is a valid initialized `winsize` and does not get retained by the `ioctl` call
     if unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), libc::TIOCSWINSZ, &raw const ws) } < 0 {
@@ -146,7 +177,7 @@ pub unsafe fn switch_to_ctty(fd: RawFd) -> std::io::Result<()> {
     // is typically a small wrapper over a raw syscall. invalid `fd` is reported as a syscall error
     // additionally, if this call fails, the process will remain `setsid`'d, so callers must treat
     // errors with caution
-    if unsafe { libc::ioctl(fd, libc::c_ulong::from(libc::TIOCSCTTY), 0 as libc::c_int) } < 0 {
+    if unsafe { libc::ioctl(fd, libc::c_ulong::from(libc::TIOCSCTTY), libc::c_int::from(0)) } < 0 {
         return Err(Error::last_os_error());
     }
 

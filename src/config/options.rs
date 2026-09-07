@@ -7,6 +7,7 @@ use super::lower::{ConfigError, ErrorKind, LiteralKind};
 #[derive(Debug, Clone)]
 pub struct Options {
     pub log_file: String,
+    pub mode_query_timeout_ms: u64,
     pub esc_byte_is_partial_esc: bool,
     pub partial_utf8_timeout_ms: u64,
     pub partial_esc_timeout_ms: u64,
@@ -18,6 +19,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             log_file: String::new(),
+            mode_query_timeout_ms: 40,
             esc_byte_is_partial_esc: false,
             partial_utf8_timeout_ms: 10,
             partial_esc_timeout_ms: 15,
@@ -31,6 +33,9 @@ impl Options {
     pub fn set(&mut self, name: String, value: Literal, span: Span) -> Result<(), ConfigError> {
         match name.as_str() {
             "log_file" => self.log_file = expect_string(value, span)?,
+            "mode_query_timeout_ms" => {
+                self.mode_query_timeout_ms = expect_positive_int(name, value, span)?;
+            }
             "esc_byte_is_partial_esc" => self.esc_byte_is_partial_esc = expect_bool(value, span)?,
             "partial_utf8_timeout" => {
                 self.partial_utf8_timeout_ms = expect_positive_int(name, value, span)?;

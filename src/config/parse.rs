@@ -368,7 +368,7 @@ impl<'a> Cursor<'a> {
                 })
             }
             _ => Err(ParseError {
-                kind: ErrorKind::InvalidEscape { ch: esc as char },
+                kind: ErrorKind::InvalidEscape { ch: char::from(esc) },
                 span: Span {
                     ctx: self.ctx,
                     start: self.base + escape_pos,
