@@ -261,15 +261,13 @@ impl FireCtx {
 mod tests {
     use super::*;
 
-    use std::fs;
-
     use crate::config::loader::ConfigLoader;
     use crate::model::{Action, CommandSpec, Event, Key, Mods, Token};
 
     fn cfg(src: &str) -> crate::model::Config {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.conf");
-        fs::write(&path, src).unwrap();
+        std::fs::write(&path, src).unwrap();
         ConfigLoader::new().parse_file(&path).unwrap()
     }
 

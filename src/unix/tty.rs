@@ -8,32 +8,32 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Mutex;
 
-pub fn check_terminals<F: AsFd, G: AsFd>(input: &F, output: &G) -> std::io::Result<bool> {
-    let input = input.as_fd();
-    let output = output.as_fd();
-    if !input.is_terminal() || !output.is_terminal() {
-        return Ok(false);
+pub fn same_terminal<F: AsFd, G: AsFd>(a: &F, b: &G) -> std::io::Result<bool> {
+    let a = a.as_fd();
+    let b = b.as_fd();
+    if !a.is_terminal() || !b.is_terminal() {
+        return Err(Error::from_raw_os_error(libc::ENOTTY));
     }
 
-    let mut input_stat = MaybeUninit::<stat>::uninit();
-    // SAFETY: `input_stat.as_mut_ptr()` is valid for writes of `stat` and gets initialized by
-    // `fstat` on success; invalid `fd` is reported as a syscall error
-    if unsafe { libc::fstat(input.as_raw_fd(), input_stat.as_mut_ptr()) } < 0 {
+    let mut a_stat = MaybeUninit::<stat>::uninit();
+    // SAFETY: `a_stat.as_mut_ptr()` is valid for writes of `stat` and gets initialized by `fstat`
+    // on success; invalid `fd` is reported as a syscall error
+    if unsafe { libc::fstat(a.as_raw_fd(), a_stat.as_mut_ptr()) } < 0 {
         return Err(Error::last_os_error());
     }
-    // SAFETY: `input_stat` has been initialized by a successful `fstat`
-    let input_stat = unsafe { input_stat.assume_init() };
+    // SAFETY: `a_stat` has been initialized by a successful `fstat`
+    let a_stat = unsafe { a_stat.assume_init() };
 
-    let mut output_stat = MaybeUninit::<stat>::uninit();
-    // SAFETY: `output_stat.as_mut_ptr()` is valid for writes of `stat` and gets initialized by
-    // `fstat` on success; invalid `fd` is reported as a syscall error
-    if unsafe { libc::fstat(output.as_raw_fd(), output_stat.as_mut_ptr()) } < 0 {
+    let mut b_stat = MaybeUninit::<stat>::uninit();
+    // SAFETY: `b_stat.as_mut_ptr()` is valid for writes of `stat` and gets initialized by `fstat`
+    // on success; invalid `fd` is reported as a syscall error
+    if unsafe { libc::fstat(b.as_raw_fd(), b_stat.as_mut_ptr()) } < 0 {
         return Err(Error::last_os_error());
     }
-    // SAFETY: `output_stat` has been initialized by a successful `fstat`
-    let output_stat = unsafe { output_stat.assume_init() };
+    // SAFETY: `b_stat` has been initialized by a successful `fstat`
+    let b_stat = unsafe { b_stat.assume_init() };
 
-    Ok(input_stat.st_dev == output_stat.st_dev && input_stat.st_ino == output_stat.st_ino)
+    Ok(a_stat.st_dev == b_stat.st_dev && a_stat.st_ino == b_stat.st_ino)
 }
 
 #[derive(Debug)]

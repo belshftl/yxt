@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::BorrowedFd;
 use std::time::{Duration, Instant};
 
 use super::control::{ControlEvent, ControlScanner};
@@ -10,7 +10,6 @@ use super::mode::{TermMode, TerminalModeTracker};
 use super::query::QueriedTermMode;
 use crate::model::{Config, KeyPattern, Mapping, Protocol, Source, TokenPattern};
 use crate::runtime::io::write_all_until;
-use crate::unix::tty::dup_fd;
 
 // always turned on for kitty
 const BASE_KITTY_FLAGS: u8 = kitty::FLAG_DISAMBIGUATE_ESCAPE_CODES | kitty::FLAG_REPORT_EVENT_TYPES;
@@ -25,10 +24,10 @@ const RESTORE_TIMEOUT: Duration = Duration::from_millis(40);
 // intentionally a big overestimate
 const MAX_CANDIDATE_BYTES: usize = 32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NegotiateError {
     #[error(
-        "the terminal does not support the '{0}' keyboard protocol or any higher-ranked protocols"
+        "the terminal does not support the '{0}' keyboard protocol or any higher-ranked protocol"
     )]
     Unsupported(&'static str),
 
@@ -50,27 +49,26 @@ pub fn plan(
 ) -> Result<Option<Negotiation>, NegotiateError> {
     let requested = config.protocol.protocol;
 
-    let picked = Protocol::ALL
+    if let Some(picked) = Protocol::ALL
         .iter()
         .copied()
         .filter(|p| *p >= requested && supports(*p, queried))
-        .min();
-
-    let Some(picked) = picked else {
-        return Err(if queried.complete {
+        .min()
+    {
+        Ok(match picked {
+            Protocol::Legacy => None,
+            Protocol::Kitty => Some(Negotiation {
+                protocol: Protocol::Kitty,
+                kitty_flags: kitty_flags_for(&config.mappings),
+            }),
+        })
+    } else {
+        Err(if queried.complete {
             NegotiateError::Unsupported(requested.name())
         } else {
             NegotiateError::QueryIncomplete(requested.name())
-        });
-    };
-
-    Ok(match picked {
-        Protocol::Legacy => None,
-        Protocol::Kitty => Some(Negotiation {
-            protocol: Protocol::Kitty,
-            kitty_flags: kitty_flags_for(&config.mappings),
-        }),
-    })
+        })
+    }
 }
 
 fn supports(protocol: Protocol, queried: QueriedTermMode) -> bool {
@@ -287,20 +285,20 @@ impl TermProxy {
 }
 
 #[derive(Debug)]
-pub struct RestoreGuard {
-    fd: OwnedFd,
+pub struct RestoreGuard<'a> {
+    fd: BorrowedFd<'a>,
 }
 
-impl RestoreGuard {
-    pub fn new<F: AsFd>(fd: &F) -> std::io::Result<Self> {
-        Ok(Self { fd: dup_fd(fd)? })
+impl<'a> RestoreGuard<'a> {
+    pub fn new(fd: BorrowedFd<'a>) -> Self {
+        Self { fd }
     }
 }
 
-impl Drop for RestoreGuard {
+impl Drop for RestoreGuard<'_> {
     fn drop(&mut self) {
         _ = write_all_until(
-            self.fd.as_fd(),
+            self.fd,
             kitty::POP_FLAGS_SEQUENCE,
             Instant::now() + RESTORE_TIMEOUT,
         );
@@ -311,17 +309,15 @@ impl Drop for RestoreGuard {
 mod tests {
     use super::*;
 
-    use std::fs;
-
     use crate::config::loader::ConfigLoader;
     use crate::model::{ProtocolRequest, ProtocolVerb};
     use crate::term::decode::{Decoded, Decoder, DecoderConfig};
     use crate::term::encode::Encoder;
 
-    fn config(src: &str) -> Config {
+    fn cfg(src: &str) -> Config {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.conf");
-        fs::write(&path, src).unwrap();
+        std::fs::write(&path, src).unwrap();
         ConfigLoader::new().parse_file(&path).unwrap()
     }
 
@@ -356,18 +352,18 @@ mod tests {
 
     #[test]
     fn legacy_request_negotiates_nothing() {
-        let config = config("@version 1\n");
+        let cfg = cfg("@version 1\n");
 
-        assert_eq!(plan(&config, queried(None)).unwrap(), None);
-        assert_eq!(plan(&config, queried(Some(0))).unwrap(), None);
+        assert_eq!(plan(&cfg, queried(None)).unwrap(), None);
+        assert_eq!(plan(&cfg, queried(Some(0))).unwrap(), None);
     }
 
     #[test]
     fn kitty_request_negotiates_kitty_when_supported() {
-        let config = config("@version 1\n@protocol want kitty\n");
+        let cfg = cfg("@version 1\n@protocol want kitty\n");
 
         assert_eq!(
-            plan(&config, queried(Some(0))).unwrap(),
+            plan(&cfg, queried(Some(0))).unwrap(),
             Some(Negotiation {
                 protocol: Protocol::Kitty,
                 kitty_flags: BASE_KITTY_FLAGS,
@@ -377,34 +373,32 @@ mod tests {
 
     #[test]
     fn kitty_request_fails_on_a_terminal_without_it() {
-        let config = config("@version 1\n@protocol want kitty\n");
+        let cfg = cfg("@version 1\n@protocol want kitty\n");
 
         assert_eq!(
-            plan(&config, queried(None)),
+            plan(&cfg, queried(None)),
             Err(NegotiateError::Unsupported("kitty")),
         );
     }
 
     #[test]
     fn an_unfinished_query_is_reported_separately() {
-        let config = config("@version 1\n@protocol want kitty\n");
+        let cfg = cfg("@version 1\n@protocol want kitty\n");
         let queried = QueriedTermMode::default();
 
         assert_eq!(
-            plan(&config, queried),
+            plan(&cfg, queried),
             Err(NegotiateError::QueryIncomplete("kitty")),
         );
     }
 
     #[test]
     fn all_keys_is_only_negotiated_when_a_mapping_needs_it() {
-        let modifiers_only = config(
-            "\
+        let modifiers_only = cfg("\
 @version 1
 @protocol want kitty
 key('r'~, super) => send_key('x')
-",
-        );
+");
         assert_eq!(
             plan(&modifiers_only, queried(Some(0)))
                 .unwrap()
@@ -413,13 +407,11 @@ key('r'~, super) => send_key('x')
             BASE_KITTY_FLAGS,
         );
 
-        let bare_mod_key = config(
-            "\
+        let bare_mod_key = cfg("\
 @version 1
 @protocol want kitty
 key(left_super) => send_key('x')
-",
-        );
+");
         assert_eq!(
             plan(&bare_mod_key, queried(Some(0)))
                 .unwrap()
@@ -431,13 +423,13 @@ key(left_super) => send_key('x')
 
     #[test]
     fn plan_uses_the_configs_request() {
-        let mut config = config("@version 1\n");
-        config.protocol = ProtocolRequest {
+        let mut cfg = cfg("@version 1\n");
+        cfg.protocol = ProtocolRequest {
             verb: ProtocolVerb::Want,
             protocol: Protocol::Kitty,
         };
 
-        assert!(plan(&config, queried(Some(0))).unwrap().is_some());
+        assert!(plan(&cfg, queried(Some(0))).unwrap().is_some());
     }
 
     #[test]

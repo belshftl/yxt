@@ -135,9 +135,9 @@ pub fn read<F: AsRawFd>(fd: &F, buf: &mut [u8]) -> std::io::Result<ReadResult> {
     }
 }
 
-pub fn read_pty<F: AsRawFd>(fd: &F, buf: &mut [u8]) -> std::io::Result<ReadResult> {
+pub fn read_tty<F: AsRawFd>(fd: &F, buf: &mut [u8]) -> std::io::Result<ReadResult> {
     match read(fd, buf) {
-        Err(e) if is_pty_hangup(&e) => Ok(ReadResult::Eof),
+        Err(e) if is_hangup(&e) => Ok(ReadResult::Eof),
         other => other,
     }
 }
@@ -237,7 +237,7 @@ pub fn drain_to_pty_from_queue<F: AsRawFd>(
     q: &mut ByteQueue,
 ) -> std::io::Result<WriteToPtyResult> {
     match drain_from_queue(fd, q) {
-        Err(e) if is_pty_hangup(&e) => Ok(WriteToPtyResult::Hangup),
+        Err(e) if is_hangup(&e) => Ok(WriteToPtyResult::Hangup),
         other => other.map(|r| match r {
             WriteResult::Success(n) => WriteToPtyResult::Success(n),
             WriteResult::WouldBlock => WriteToPtyResult::WouldBlock,
@@ -246,7 +246,7 @@ pub fn drain_to_pty_from_queue<F: AsRawFd>(
     }
 }
 
-fn is_pty_hangup(e: &std::io::Error) -> bool {
+fn is_hangup(e: &std::io::Error) -> bool {
     matches!(e.raw_os_error(), Some(libc::EIO | libc::EPIPE))
         || e.kind() == std::io::ErrorKind::WriteZero
 }

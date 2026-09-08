@@ -395,8 +395,6 @@ fn expect_include_arg(args: Vec<Expr>, span: Span) -> Result<PathBuf, ConfigLoad
 mod tests {
     use super::*;
 
-    use std::fs;
-
     use tempfile::TempDir;
 
     use crate::config::lower::ErrorKind;
@@ -408,9 +406,9 @@ mod tests {
     fn write_file(dir: &TempDir, rel: &str, text: &str) -> std::path::PathBuf {
         let path = dir.path().join(rel);
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
+            std::fs::create_dir_all(parent).unwrap();
         }
-        fs::write(&path, text).unwrap();
+        std::fs::write(&path, text).unwrap();
         path
     }
 

@@ -69,27 +69,22 @@ impl QueriedTermMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QueryFd {
-    Input,
+    Term,
 }
 
-pub fn query_term_mode<F: AsFd, G: AsFd>(
-    input: &F,
-    output: &G,
-    timeout: Duration,
-) -> std::io::Result<QueriedTermMode> {
-    let input = input.as_fd();
-    let output = output.as_fd();
+pub fn query_term_mode<F: AsFd>(term: &F, timeout: Duration) -> std::io::Result<QueriedTermMode> {
+    let term = term.as_fd();
     let deadline = Instant::now() + timeout;
     let mut queried = QueriedTermMode::default();
 
-    if !write_all_until(output, QUERY, deadline)? {
+    if !write_all_until(term, QUERY, deadline)? {
         return Ok(queried);
     }
 
     let mut scanner = ControlScanner::default();
     let mut buf = [0u8; 512];
     let fds = SelectFds {
-        read: vec![(QueryFd::Input, input)],
+        read: vec![(QueryFd::Term, term)],
         write: Vec::new(),
     };
 
@@ -97,10 +92,10 @@ pub fn query_term_mode<F: AsFd, G: AsFd>(
         let Some(ready) = wait(&fds, deadline)? else {
             break;
         };
-        if !ready.readable(QueryFd::Input) {
+        if !ready.readable(QueryFd::Term) {
             break;
         }
-        match read(&input, &mut buf)? {
+        match read(&term, &mut buf)? {
             ReadResult::Success(n) => {
                 for event in scanner.push(&buf[..n]) {
                     if let ControlEvent::Csi(csi) = event {

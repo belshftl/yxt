@@ -1,13 +1,27 @@
 // SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
-use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::time::Duration;
+
+fn status_flags(fd: BorrowedFd<'_>) -> std::io::Result<libc::c_int> {
+    // SAFETY: `fd.as_raw_fd()` comes from a valid `BorrowedFd`, so it is a valid open fd for the
+    // duration of this call; `F_GETFL` takes no third argument
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(flags)
+    }
+}
+
+pub fn is_rdwr<F: AsFd>(fd: &F) -> std::io::Result<bool> {
+    Ok((status_flags(fd.as_fd())? & libc::O_ACCMODE) == libc::O_RDWR)
+}
 
 pub struct NonblockingFd<'a> {
     fd: BorrowedFd<'a>,
     old_flags: libc::c_int,
-    restored: bool,
 }
 
 impl<'a> NonblockingFd<'a> {
@@ -26,25 +40,19 @@ impl<'a> NonblockingFd<'a> {
         if unsafe { libc::fcntl(raw, libc::F_SETFL, old_flags | libc::O_NONBLOCK) } < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        Ok(Self {
-            fd,
-            old_flags,
-            restored: false,
-        })
+        Ok(Self { fd, old_flags })
     }
+}
 
-    pub fn restore(&mut self) -> std::io::Result<()> {
-        if self.restored {
-            return Ok(());
-        }
-
+impl Drop for NonblockingFd<'_> {
+    fn drop(&mut self) {
         let raw = self.fd.as_raw_fd();
 
         // SAFETY: `raw` comes from a valid `BorrowedFd`, so it is a valid open fd for the duration
         // of this call; `F_GETFL` takes no third argument
         let curr = unsafe { libc::fcntl(raw, libc::F_GETFL) };
         if curr < 0 {
-            return Err(std::io::Error::last_os_error());
+            return; // swallow error
         }
 
         // restore only O_NONBLOCK bit
@@ -52,18 +60,7 @@ impl<'a> NonblockingFd<'a> {
 
         // SAFETY: `raw` comes from a valid `BorrowedFd`, so it is a valid open fd for the duration
         // of this call; `flags` is based on the current status-flag bitmask
-        if unsafe { libc::fcntl(raw, libc::F_SETFL, flags) } < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-
-        self.restored = true;
-        Ok(())
-    }
-}
-
-impl Drop for NonblockingFd<'_> {
-    fn drop(&mut self) {
-        _ = self.restore();
+        _ = unsafe { libc::fcntl(raw, libc::F_SETFL, flags) }; // swallow error
     }
 }
 

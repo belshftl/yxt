@@ -3,10 +3,7 @@
 
 #![warn(clippy::pedantic)]
 #![forbid(unsafe_op_in_unsafe_fn)]
-#![forbid(
-    clippy::as_conversions,
-    reason = "the as operator is remarkably good at hiding all sorts of truncation/signed-wrap behavior that should be spelled out explicitly"
-)]
+#![forbid(clippy::as_conversions)]
 #![forbid(clippy::borrow_as_ptr)]
 #![forbid(clippy::tests_outside_test_module)]
 #![forbid(clippy::undocumented_unsafe_blocks)]
@@ -32,7 +29,9 @@ mod unix;
 
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
+use std::io::IsTerminal;
 use std::os::fd::AsFd;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::config::loader::ConfigLoader;
@@ -41,7 +40,7 @@ use crate::runtime::children::{ActionManager, ServiceManager};
 use crate::runtime::cli::{Cli, config_path};
 use crate::runtime::io::{
     ByteQueue, ReadResult, WriteResult, WriteToPtyResult, drain_from_queue,
-    drain_to_pty_from_queue, read, read_pty, write_all_until,
+    drain_to_pty_from_queue, read_tty, write_all_until,
 };
 use crate::runtime::router::{RouteEffect, RouteInput, Router};
 use crate::term::decode::{Decoded, Decoder, DecoderConfig};
@@ -50,13 +49,13 @@ use crate::term::negotiate::{self, RestoreGuard, TermProxy};
 use crate::term::query::query_term_mode;
 use crate::unix::child::{
     ChildEnv, ChildExt, ChildSpawnOptions, ChildStdio, OsCommandSpec, PtyChild,
-    PtyChildSpawnOptions, spawn_pty_attached,
+    PtyChildSpawnOptions, PtyChildStdin, spawn_pty_attached,
 };
-use crate::unix::fd::{NonblockingFd, ReadyFds, SelectFds, select};
+use crate::unix::fd::{NonblockingFd, ReadyFds, SelectFds, is_rdwr, select};
 use crate::unix::pledge::try_pledge;
 use crate::unix::signal::{SignalError, SignalRegistry};
 use crate::unix::sock::{ControlSock, default_sock_path};
-use crate::unix::tty::{RawTerminal, check_terminals, get_winsize, set_winsize};
+use crate::unix::tty::{RawTerminal, get_winsize, same_terminal, set_winsize};
 
 const SENSITIVE_CHILD_BASENAMES: &[&str] = &[
     // privilege/auth
@@ -143,7 +142,13 @@ run with --allow-sensitive-child to run anyways"
     )]
     SensitiveChild(String),
 
-    #[error("stdin and stdout must be terminals, and must both be the same terminal")]
+    #[error("stdout must be a terminal")]
+    NotATerminal,
+
+    #[error("stdout must be open read-write, since it's the terminal input is read from")]
+    TerminalNotReadWrite,
+
+    #[error("stdin is a terminal but not the same one as stdout")]
     NotOneTerminal,
 
     #[error(transparent)]
@@ -181,11 +186,11 @@ run with --allow-sensitive-child to run anyways"
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FdKey {
-    Stdin,
+    TermIn,
     Sock,
     PtyMaster,
     Signals,
-    Stdout,
+    TermOut,
 }
 
 fn main() {
@@ -317,7 +322,16 @@ try '--help' for more info
         return Ok(2);
     }
 
-    let config_path = config_path(&cli)?;
+    let implicit_config_dir = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(xdg) => PathBuf::from(xdg),
+        None => std::env::var_os("HOME")
+            .map_or_else(|| PathBuf::from("."), PathBuf::from)
+            .join(".config"),
+    }
+    .join("yxt")
+    .join("implicit");
+    std::fs::create_dir_all(&implicit_config_dir)?;
+    let config_path = config_path(&cli, &implicit_config_dir)?;
     let mut loader = ConfigLoader::new();
     let config = match loader.parse_file(config_path.as_ref()) {
         Ok(c) => c,
@@ -346,7 +360,19 @@ try '--help' for more info
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
 
-    if !check_terminals(&stdin, &stdout)? {
+    // stdout is just the terminal; it's what gets put into raw mode, queried for capabilities, and
+    // read/written into
+    // stdin is only for the child's own input and gets passed through as is if it's not a tty
+    // no need to check if they're open, as if an fd 0-2 is not open before main() runs the runtime
+    // opens /dev/null into it
+    if !stdout.is_terminal() {
+        return Err(AppError::NotATerminal);
+    }
+    if !is_rdwr(&stdout)? {
+        return Err(AppError::TerminalNotReadWrite);
+    }
+    let stdin_is_terminal = stdin.is_terminal();
+    if stdin_is_terminal && !same_terminal(&stdin, &stdout)? {
         return Err(AppError::NotOneTerminal);
     }
 
@@ -371,21 +397,19 @@ try '--help' for more info
         stdout: ChildStdio::Null,
         stderr: ChildStdio::Null,
     };
-    let winsize = get_winsize(&stdin).ok();
+    let winsize = get_winsize(&stdout).ok();
 
-    let _raw = RawTerminal::enter(&stdin)?;
-    let _stdin_nonblock = NonblockingFd::new(stdin.as_fd())?;
-    let _stdout_nonblock = NonblockingFd::new(stdout.as_fd())?;
+    let _raw = RawTerminal::enter(&stdout)?;
+    let _term_nonblock = NonblockingFd::new(stdout.as_fd())?;
 
     let queried = query_term_mode(
-        &stdin,
         &stdout,
         Duration::from_millis(config.options.mode_query_timeout_ms),
     )?;
     let negotiation = negotiate::plan(&config, queried)?;
     let mut proxy = TermProxy::new(queried, negotiation);
     let _restore = if let Some(enable) = proxy.enable_sequence() {
-        let guard = RestoreGuard::new(&stdout)?;
+        let guard = RestoreGuard::new(stdout.as_fd());
         if !write_all_until(
             stdout.as_fd(),
             &enable,
@@ -408,6 +432,11 @@ try '--help' for more info
             env: env.clone(),
             cwd: None,
             window_size: winsize,
+            stdin: if stdin_is_terminal {
+                PtyChildStdin::Pty
+            } else {
+                PtyChildStdin::Passthrough(stdin.as_fd())
+            },
         },
     )?;
 
@@ -438,7 +467,7 @@ try '--help' for more info
     let mut encoder = Encoder::new(proxy.downstream_mode());
     let router = Router::new(&config);
 
-    let mut stdin_buf = vec![0u8; 8192].into_boxed_slice();
+    let mut term_buf = vec![0u8; 8192].into_boxed_slice();
     let mut pty_buf = vec![0u8; 8192].into_boxed_slice();
     let mut to_terminal = Vec::new();
     let mut to_child = Vec::new();
@@ -507,14 +536,14 @@ try '--help' for more info
             // avoid using a terminal mode the real terminal isn't in yet
             if (stdout_queue.is_empty() || !mode_dirty) && master_queue.remaining() > 0 && !stopping
             {
-                read.push((FdKey::Stdin, stdin.as_fd()));
+                read.push((FdKey::TermIn, stdout.as_fd()));
                 read.push((FdKey::Sock, sock.as_fd()));
             }
             if stdout_queue.remaining() > PROXY_INJECT_HEADROOM {
                 read.push((FdKey::PtyMaster, pty_child.pty_master.as_fd()));
             }
             if !stdout_queue.is_empty() {
-                write.push((FdKey::Stdout, stdout.as_fd()));
+                write.push((FdKey::TermOut, stdout.as_fd()));
             }
             if !master_queue.is_empty() {
                 write.push((FdKey::PtyMaster, pty_child.pty_master.as_fd()));
@@ -530,7 +559,7 @@ try '--help' for more info
 
         let now = Instant::now();
 
-        if ready.writable(FdKey::Stdout) {
+        if ready.writable(FdKey::TermOut) {
             while matches!(
                 drain_from_queue(&stdout, &mut stdout_queue)?,
                 WriteResult::Success(_)
@@ -572,7 +601,7 @@ try '--help' for more info
                 "pty master should only be polled when there's room"
             );
 
-            match read_pty(&pty_child.pty_master, &mut pty_buf[..room])? {
+            match read_tty(&pty_child.pty_master, &mut pty_buf[..room])? {
                 ReadResult::Success(n) => {
                     to_terminal.clear();
                     to_child.clear();
@@ -626,7 +655,7 @@ try '--help' for more info
                         continue 'mainloop;
                     }
                     libc::SIGWINCH => {
-                        let ws = get_winsize(&stdin)?;
+                        let ws = get_winsize(&stdout)?;
                         set_winsize(&pty_child.pty_master, ws)?;
                         let r = router
                             .fire(RouteInput::Event(&Event::Signal(Signal(libc::SIGWINCH))))?;
@@ -644,12 +673,12 @@ try '--help' for more info
             }
         }
 
-        if ready.readable(FdKey::Stdin) {
+        if ready.readable(FdKey::TermIn) {
             loop {
-                match read(&stdin, &mut stdin_buf)? {
+                match read_tty(&stdout, &mut term_buf)? {
                     ReadResult::Success(n) => {
                         let mut decoded = Vec::new();
-                        decoder.push(now, &stdin_buf[..n], &mut decoded);
+                        decoder.push(now, &term_buf[..n], &mut decoded);
                         handle_decoded(
                             &decoded,
                             &encoder,
@@ -671,7 +700,7 @@ try '--help' for more info
                         )?;
                         continue 'mainloop;
                     }
-                    ReadResult::EmptyInput => panic!("unexpected EmptyInput read result"),
+                    ReadResult::EmptyInput => unreachable!(),
                 }
             }
         }

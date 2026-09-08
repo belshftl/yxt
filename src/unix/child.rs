@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use std::ffi::OsString;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -79,11 +79,18 @@ impl Default for ChildSpawnOptions {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct PtyChildSpawnOptions {
+#[derive(Debug, Clone, Copy)]
+pub enum PtyChildStdin<'a> {
+    Pty,                         // the pty slave, for terminal input routing
+    Passthrough(BorrowedFd<'a>), // the given fd verbatim, with the parent not involved
+}
+
+#[derive(Debug, Clone)]
+pub struct PtyChildSpawnOptions<'a> {
     pub env: ChildEnv,
     pub cwd: Option<PathBuf>,
     pub window_size: Option<libc::winsize>,
+    pub stdin: PtyChildStdin<'a>,
 }
 
 #[derive(Debug)]
@@ -121,7 +128,7 @@ pub fn spawn(spec: &OsCommandSpec, opts: &ChildSpawnOptions) -> Result<Child, Ch
 
 pub fn spawn_pty_attached(
     spec: &OsCommandSpec,
-    opts: &PtyChildSpawnOptions,
+    opts: &PtyChildSpawnOptions<'_>,
 ) -> Result<PtyChild, ChildError> {
     let pair = open_pty_pair()?;
     if let Some(ws) = opts.window_size {
@@ -129,7 +136,10 @@ pub fn spawn_pty_attached(
     }
 
     let slave_raw_fd = pair.slave.as_raw_fd();
-    let stdin = dup_fd(&pair.slave)?;
+    let stdin = match opts.stdin {
+        PtyChildStdin::Pty => dup_fd(&pair.slave)?,
+        PtyChildStdin::Passthrough(fd) => dup_fd(&fd)?,
+    };
     let stdout = dup_fd(&pair.slave)?;
     let stderr = dup_fd(&pair.slave)?;
     let mut cmd = make_command(spec)?;
