@@ -630,6 +630,7 @@ key('x'~'X', shift) => send_key('s')
         let router = router(
             r"
 @version 1
+@protocol want kitty
 key(' '~' ') => send_key('u')
 key(' '~' ', shift) => send_key('s')
 ",
@@ -774,6 +775,7 @@ key('x'~'X', ctrl) => send_key('c')
         let router = router(
             r"
 @version 1
+@protocol want kitty
 key('x'~'X', ctrl & shift) => send_key('s')
 ",
         );
@@ -793,6 +795,7 @@ key('x'~'X', ctrl & shift) => send_key('s')
         let router = router(
             r"
 @version 1
+@protocol want kitty
 key(' '~' ') => send_key('u')
 key(' '~' ', shift) => send_key('s')
 ",

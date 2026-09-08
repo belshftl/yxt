@@ -18,7 +18,7 @@ impl Default for ControlScannerConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringControlKind {
     Dcs,
     Sos,
@@ -33,7 +33,7 @@ impl StringControlKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlPrefix {
     Ss2,
     Ss3,

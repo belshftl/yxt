@@ -626,14 +626,32 @@ fn lower_key_source(
     let (key, dfl) = lower_key_pattern_arg(key_expr, "key", span)?;
     let key_need = match key {
         KeyPattern::Named(key) => ProtocolNeed::of(key.required_protocol(), key_span),
-        KeyPattern::CharPair(_) => None, // regardless of protocol, chars are always just text
+        KeyPattern::CharPair(_) => None, // a char on its own is always just text
     };
 
-    let (mods, mods_need) = lower_mods_pattern(args.collect(), span, dfl)?;
+    let mod_args: Vec<Expr> = args.collect();
+    // a key and a modifier set that are each fine alone can still be unreportable together, so
+    // there is no one argument to blame for it; point at the whole list instead
+    let args_span = Span {
+        ctx: key_span.ctx,
+        start: key_span.start,
+        end: mod_args.last().map_or(key_span.end, |e| e.span().end),
+    };
+
+    let (mods, mods_need) = lower_mods_pattern(mod_args, span, dfl)?;
+    let combined_need = match &mods {
+        // `any` intentionally means "anything effectively catchable under the current protocol"
+        ModsPattern::Any => None,
+        ModsPattern::AnyOf(alts) => alts
+            .iter()
+            .map(|alt| ProtocolNeed::of(key.required_protocol(*alt), args_span))
+            .fold(None, ProtocolNeed::max),
+    };
 
     Ok((
         Source::Token(TokenPattern::Key { key, mods }),
-        ProtocolNeed::max(key_need, mods_need),
+        // the more precisely blamed needs come first so that they win an equal-rank tie
+        ProtocolNeed::max(ProtocolNeed::max(key_need, mods_need), combined_need),
     ))
 }
 

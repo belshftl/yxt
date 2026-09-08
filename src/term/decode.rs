@@ -799,4 +799,60 @@ mod tests {
         assert_eq!(out, vec![Decoded::Unknown(b"\x1b]12345".to_vec())]);
         assert!(d.is_idle());
     }
+
+    #[test]
+    fn the_models_legacy_text_claims_match_what_the_decoder_produces() {
+        let mut inputs = Vec::new();
+        for byte in 0u8..=0x7f {
+            inputs.push(vec![byte]);
+            inputs.push(vec![0x1b, byte]);
+        }
+        for ch in ['é', '→'] {
+            let mut buf = [0u8; 4];
+            let encoded = ch.encode_utf8(&mut buf).as_bytes().to_vec();
+            inputs.push([&[0x1b][..], &encoded].concat());
+            inputs.push(encoded);
+        }
+
+        let mut produced = std::collections::HashSet::new();
+        for input in &inputs {
+            for item in decode_all(cfg(false), input) {
+                if let Decoded::Token(Token::Utf8 { ch, mods, .. }) = item {
+                    produced.insert((ch, mods));
+                }
+            }
+        }
+
+        let chars = [
+            'a', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'z', 'A', 'Z', '[', '\\', ']', '^', '_',
+            ' ', '1', '@', 'é', '→',
+        ];
+        let mods = [
+            Mods::EMPTY,
+            Mods::SHIFT,
+            Mods::ALT,
+            Mods::CTRL,
+            Mods::SUPER,
+            Mods::HYPER,
+            Mods::META,
+            Mods::ALT | Mods::CTRL,
+            Mods::CTRL | Mods::SHIFT,
+            Mods::ALT | Mods::SHIFT,
+        ];
+
+        for ch in chars {
+            let pattern = crate::model::KeyPattern::CharPair(crate::model::CharPair {
+                unshifted: ch,
+                shifted: ch,
+            });
+            for m in mods {
+                let claims_legacy = pattern.required_protocol(m) == crate::model::Protocol::Legacy;
+                assert_eq!(
+                    claims_legacy,
+                    produced.contains(&(ch, m)),
+                    "{ch:?} with {m:?}: model claims legacy={claims_legacy}",
+                );
+            }
+        }
+    }
 }

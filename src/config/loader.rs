@@ -1163,6 +1163,63 @@ group("reload") => sh("reload")
     }
 
     #[test]
+    fn protocol_err_span_is_all_the_args_for_a_problematic_combination() {
+        // neither half is a problem on its own, so there is no one argument to blame
+        assert_eq!(
+            protcool_err_span_text("key('h'~, ctrl) => inherit_key('d'~)"),
+            "'h'~, ctrl"
+        );
+        assert_eq!(
+            protcool_err_span_text("key(tab, ctrl) => send_key('y')"),
+            "tab, ctrl"
+        );
+    }
+
+    #[test]
+    fn legacy_ambiguous_combinations_need_a_higher_ranked_protocol() {
+        for mapping in [
+            // these are ambiguous with some named key's encoding
+            "key('h'~, ctrl) => send_key('y')", // backspace
+            "key('i'~, ctrl) => send_key('y')", // tab
+            "key('j'~, ctrl) => send_key('y')", // enter
+            "key('m'~, ctrl) => send_key('y')", // enter
+            "key('['~, ctrl) => send_key('y')", // esc
+            "key(enter, ctrl) => send_key('y')", // enter without ctrl
+            // and these have no legacy encoding at all
+            "key('1'~, ctrl) => send_key('y')", // only letters get the c0 byte encodings
+            "key('a'~, ctrl & shift) => send_key('y')", // the ctrl encoding loses shift
+            "key(' '~, shift) => send_key('y')", // no shifted form of space
+            "key('a'~, meta) => send_key('y')", // no meta encoding
+            "key(esc, alt) => send_key('y')", // ESC ESC is indistinguishable from a lone esc
+            "key(kp_5, ctrl) => send_key('y')", // the keypad has no modifier form
+        ] {
+            _ = protcool_err_span_text(mapping); // asserts the error kind internally
+        }
+    }
+
+    #[test]
+    fn legacy_reportable_combinations_are_accepted() {
+        for mapping in [
+            "key('a'~, ctrl) => send_key('y')",
+            "key('z'~, ctrl & alt) => send_key('y')",
+            "key(' '~, ctrl) => send_key('y')", // ctrl+space is nul
+            "key('h'~, alt) => send_key('y')", // ctrl+h is problematic but not alt+h
+            "key('h'~, shift) => send_key('y')", // the shifted side stands in for the modifier
+            "key(f1, ctrl & shift) => send_key('y')", // csi sequences carry a modifier bitfield
+            "key(tab, alt) => send_key('y')",
+            "key(esc) => send_key('y')",
+            "key('h'~, any) => send_key('y')", // `any` asks for nothing in particular
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = write_file(&dir, "root.conf", &format!("@version 1\n{mapping}\n"));
+            assert!(
+                parse(&root).is_ok(),
+                "{mapping:?} should be accepted under legacy",
+            );
+        }
+    }
+
+    #[test]
     fn protocol_request_carries_across_includes() {
         let dir = tempfile::tempdir().unwrap();
         write_file(

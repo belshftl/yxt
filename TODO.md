@@ -2,6 +2,8 @@ roughly highest to lowest priority, though order may change at any time
 
 to v0.1:
 - "toggle functionality on/off" mapping target, maybe like `key(esc) => set_state(off)` or `signal(SIGUSR1) => set_state(toggle)`
+- support `modifyOtherKeys`; kitty moves up to rank 2 and `modifyOtherKeys` becomes rank 1. raised from v0.2 because most of the combinations that currently error with "needs kitty" (ctrl+h, ctrl+shift+a, ...) really only need `modifyOtherKeys`, and because the modifier pattern shorthands below wait on it
+- rework the modifier pattern shorthands alongside `modifyOtherKeys`: rename `any` to `catchall`, add `most` (shift/alt/ctrl/meta) and `every` (all known modifiers; named so it doesn't read as a synonym of `catchall`). they have to be combination sets rather than alternation lists, since `none || shift || ctrl` doesn't catch shift+ctrl - so either special-case them the way `any` is, or invent a general "any combination of these modifiers" operator. `most` can't be satisfied by legacy for text sources at all, which is why it's coupled to `modifyOtherKeys` rather than standing alone
 - write a new readme from scratch; should probably not be too reference-y, document the basics and the common "remap some keys" usecase but leave the details to the manpage
 - bring some more consistency to the timeouts/etc scattered across various configurable options and constants and such, and add a `--high-latency` preset; the two realistic modern usecases are a terminal emulator, which has a tiny near negligible latency, and a ssh/network connection which can have a very high latency if ping is high
 - print include chain in diagnostics for non-root files
@@ -17,6 +19,5 @@ to v0.2:
 - text-input mapping target; coupled with deterministic ordering between same-source mappings, this could allow for things like `key('\'~) => send_key(esc)`, `key('\'~) => send_text(":cd ")`. technically already doable character-by-character but tedious
 - maybe some kind of facility for keyboard layout agnostic input with the kitty protocol
 - byte literals, byte arrays, and `sockdata_bytes(...)` / `unsafe! bytes(...)`
-- support `modifyOtherKeys`; kitty moves up to rank 2 and `modifyOtherKeys` becomes rank 1
 - consider doing a dfs/kahn to find group cycles at config load rather than at runtime
 - think of more things to add here

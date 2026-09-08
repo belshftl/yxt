@@ -7,13 +7,13 @@ use crate::config::{ast::Span, options::Options};
 
 // ================================================================================================
 // keys/mods
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CharPair {
     pub unshifted: char,
     pub shifted: char,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Esc,
     Enter,
@@ -112,7 +112,7 @@ impl Key {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Left,
     Right,
@@ -120,7 +120,7 @@ pub enum Direction {
     Down,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeypadKey {
     Digit(u8), // 0..9
     Decimal,
@@ -145,7 +145,7 @@ pub enum KeypadKey {
     Delete,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaKey {
     Play,
     Pause,
@@ -162,7 +162,7 @@ pub enum MediaKey {
     MuteVolume,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModifierKey {
     LeftShift,
     LeftCtrl,
@@ -240,7 +240,7 @@ impl std::ops::BitAndAssign for Mods {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyEventKind {
     Press,
     Repeat,
@@ -249,7 +249,7 @@ pub enum KeyEventKind {
 
 // ================================================================================================
 // protocol
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Protocol {
     Legacy,
     Kitty,
@@ -274,12 +274,12 @@ impl Protocol {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolVerb {
     Want,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProtocolRequest {
     pub verb: ProtocolVerb,
     pub protocol: Protocol,
@@ -296,7 +296,7 @@ impl Default for ProtocolRequest {
 
 // ================================================================================================
 // groups
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupId(pub(crate) usize);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,10 +338,10 @@ impl GroupTable {
 
 // ================================================================================================
 // signal/command
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Signal(pub libc::c_int);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandSpec {
     Exec { argv: Vec<String> },
     Shell { command: String },
@@ -349,7 +349,7 @@ pub enum CommandSpec {
 
 // ================================================================================================
 // concrete sources / payloads
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     Utf8 {
         ch: char,
@@ -394,14 +394,14 @@ impl Token {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TokenPayload {
     pub actual_mods: Mods,
     pub logical_mods: Mods,
     pub kind: KeyEventKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Payload {
     Token(TokenPayload),
 }
@@ -422,13 +422,89 @@ pub enum PayloadKind {
 
 // ================================================================================================
 // source/target patterns
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyPattern {
     Named(Key),
     CharPair(CharPair),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+impl KeyPattern {
+    pub fn required_protocol(&self, mods: Mods) -> Protocol {
+        let legacy = match self {
+            Self::Named(key) => legacy_reports_key(*key, mods),
+            Self::CharPair(pair) => legacy_reports_char_pair(*pair, mods),
+        };
+        if legacy {
+            Protocol::Legacy
+        } else {
+            Protocol::Kitty
+        }
+    }
+}
+
+fn legacy_reports_key(key: Key, mods: Mods) -> bool {
+    if !key.is_legacy_reportable() {
+        return false;
+    }
+
+    // the mod bitfield on csi/vt sequences
+    let csi_mods = Mods::SHIFT | Mods::ALT | Mods::CTRL | Mods::META;
+
+    let carries = match key {
+        // begin is the one keypad key reported as csi rather than a bare ss3
+        Key::Keypad(KeypadKey::Begin) => csi_mods,
+        // the rest of the keypad has no modifier form at all, and neither does esc, which can't
+        // even carry an alt prefix since ESC ESC is indistinguishable from a lone esc
+        Key::Esc | Key::Keypad(_) => Mods::EMPTY,
+        // the other bare c0 bytes carry no modifier of their own but do take an alt prefix
+        Key::Enter | Key::Tab | Key::Backspace => Mods::ALT,
+        _ => csi_mods,
+    };
+
+    (mods & !carries) == Mods::EMPTY
+}
+
+fn legacy_reports_char_pair(pair: CharPair, mods: Mods) -> bool {
+    if (mods & Mods::SHIFT) == Mods::EMPTY {
+        legacy_reports_char(pair.unshifted, mods)
+    } else {
+        // shift isn't even a modifier under legacy, all that changes is the shifted side of the
+        // pair standing in for the unshifted one, so the two must differ
+        pair.unshifted != pair.shifted && legacy_reports_char(pair.shifted, mods & !Mods::SHIFT)
+    }
+}
+
+fn legacy_reports_char(ch: char, mods: Mods) -> bool {
+    // alt is only an esc prefix, so it doesn't change what the rest of the sequence can express
+    let alt = (mods & Mods::ALT) != Mods::EMPTY;
+
+    if (mods & !Mods::ALT) == Mods::CTRL {
+        // ctrl turns the character into a c0 byte, and no such byte introduces a sequence, so the
+        // esc prefix stays unambiguous here
+        legacy_reports_ctrl_char(ch)
+    } else if (mods & !Mods::ALT) == Mods::EMPTY {
+        // c0 or del always decodes as the corresponding named key, not as text
+        ch >= ' ' && ch != '\u{7f}' && !(alt && esc_ch_starts_sequence(ch))
+    } else {
+        // super/hyper/meta can't be encoded for text
+        false
+    }
+}
+
+fn esc_ch_starts_sequence(ch: char) -> bool {
+    // mirrors `term::control::classify_esc_byte`
+    // SS2, SS3, DCS, SOS, CSI, OSC, PM, APC
+    matches!(ch, 'N' | 'O' | 'P' | 'X' | '[' | ']' | '^' | '_')
+}
+
+fn legacy_reports_ctrl_char(ch: char) -> bool {
+    // 0x08 backspace (ctrl+h), 0x09 tab (ctrl+i), 0x0a and 0x0d enter (ctrl+j, ctrl+m),
+    // 0x1b esc (ctrl+[)
+    // ctrl+space makes it as nul
+    matches!(ch, ' ' | 'a'..='g' | 'k' | 'l' | 'n'..='z' | '\\' | ']' | '^' | '_')
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModsPattern {
     Any,
     AnyOf(Vec<Mods>),
@@ -443,12 +519,12 @@ impl ModsPattern {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenPattern {
     Key { key: KeyPattern, mods: ModsPattern },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InheritToken {
     Key { key: KeyPattern },
 }
@@ -481,18 +557,18 @@ impl InheritToken {
 
 // ================================================================================================
 // entity types
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Signal(Signal),
     Sockdata(Vec<u8>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Command(CommandSpec),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     Event(Event),
     Token(TokenPattern),
@@ -508,7 +584,7 @@ impl Source {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Token(Token),
     InheritToken(InheritToken),
