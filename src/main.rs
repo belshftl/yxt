@@ -220,6 +220,7 @@ fn run(argv0: &str) -> Result<i32, AppError> {
         encoder: &Encoder,
         master_queue: &mut ByteQueue,
         actions: &mut ActionManager,
+        mappings_enabled: &mut bool,
     ) -> Result<(), AppError> {
         match effect {
             RouteEffect::Token(tok) => {
@@ -231,6 +232,7 @@ fn run(argv0: &str) -> Result<i32, AppError> {
             }
             RouteEffect::Action(act) => match act {
                 Action::Command(cmd) => actions.spawn(cmd)?,
+                Action::ToggleMappings(op) => *mappings_enabled = op.apply(*mappings_enabled),
             },
         }
         Ok(())
@@ -242,11 +244,12 @@ fn run(argv0: &str) -> Result<i32, AppError> {
         router: &Router,
         master_queue: &mut ByteQueue,
         actions: &mut ActionManager,
+        mappings_enabled: &mut bool,
     ) -> Result<(), AppError> {
         for item in decoded {
             match item {
                 Decoded::Token(tok) => {
-                    let r = router.fire(RouteInput::Token(tok))?;
+                    let r = router.fire(RouteInput::Token(tok), *mappings_enabled)?;
                     if !r.matched
                         && let Some(bytes) = encoder.encode_token(tok)
                     {
@@ -255,7 +258,7 @@ fn run(argv0: &str) -> Result<i32, AppError> {
                             .map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?;
                     }
                     for effect in r.effects {
-                        apply_effect(&effect, encoder, master_queue, actions)?;
+                        apply_effect(&effect, encoder, master_queue, actions, mappings_enabled)?;
                     }
                 }
                 Decoded::Unknown(bytes) => master_queue
@@ -474,6 +477,7 @@ try '--help' for more info
     let mut master_queue = ByteQueue::new(32768);
     let mut stdout_queue = ByteQueue::new(8192);
     let mut mode_dirty = false;
+    let mut mappings_enabled = true;
     let mut stopping = false;
     let mut child_down_or_forgotten = false;
     let mut services_down = false;
@@ -657,16 +661,33 @@ try '--help' for more info
                     libc::SIGWINCH => {
                         let ws = get_winsize(&stdout)?;
                         set_winsize(&pty_child.pty_master, ws)?;
-                        let r = router
-                            .fire(RouteInput::Event(&Event::Signal(Signal(libc::SIGWINCH))))?;
+                        let r = router.fire(
+                            RouteInput::Event(&Event::Signal(Signal(libc::SIGWINCH))),
+                            mappings_enabled,
+                        )?;
                         for effect in r.effects {
-                            apply_effect(&effect, &encoder, &mut master_queue, &mut actions)?;
+                            apply_effect(
+                                &effect,
+                                &encoder,
+                                &mut master_queue,
+                                &mut actions,
+                                &mut mappings_enabled,
+                            )?;
                         }
                     }
                     other => {
-                        let r = router.fire(RouteInput::Event(&Event::Signal(Signal(other))))?;
+                        let r = router.fire(
+                            RouteInput::Event(&Event::Signal(Signal(other))),
+                            mappings_enabled,
+                        )?;
                         for effect in r.effects {
-                            apply_effect(&effect, &encoder, &mut master_queue, &mut actions)?;
+                            apply_effect(
+                                &effect,
+                                &encoder,
+                                &mut master_queue,
+                                &mut actions,
+                                &mut mappings_enabled,
+                            )?;
                         }
                     }
                 }
@@ -685,6 +706,7 @@ try '--help' for more info
                             &router,
                             &mut master_queue,
                             &mut actions,
+                            &mut mappings_enabled,
                         )?;
                     }
                     ReadResult::WouldBlock => break,
@@ -707,9 +729,15 @@ try '--help' for more info
 
         if ready.readable(FdKey::Sock) {
             while let Some(b) = sock.recv()? {
-                let r = router.fire(RouteInput::Event(&Event::Sockdata(b)))?;
+                let r = router.fire(RouteInput::Event(&Event::Sockdata(b)), mappings_enabled)?;
                 for effect in r.effects {
-                    apply_effect(&effect, &encoder, &mut master_queue, &mut actions)?;
+                    apply_effect(
+                        &effect,
+                        &encoder,
+                        &mut master_queue,
+                        &mut actions,
+                        &mut mappings_enabled,
+                    )?;
                 }
             }
         }
@@ -719,7 +747,14 @@ try '--help' for more info
         if (stdout_queue.is_empty() || !mode_dirty) && master_queue.remaining() > 0 && !stopping {
             let mut decoded = Vec::new();
             decoder.flush_timed_out(now, &mut decoded);
-            handle_decoded(&decoded, &encoder, &router, &mut master_queue, &mut actions)?;
+            handle_decoded(
+                &decoded,
+                &encoder,
+                &router,
+                &mut master_queue,
+                &mut actions,
+                &mut mappings_enabled,
+            )?;
         }
     }
 

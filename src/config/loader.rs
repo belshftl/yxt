@@ -399,7 +399,7 @@ mod tests {
 
     use crate::config::lower::ErrorKind;
     use crate::model::{
-        Action, CommandSpec, Event, Key, KeyPattern, Mods, ModsPattern, Source, Target,
+        Action, CommandSpec, Event, Key, KeyPattern, Mods, ModsPattern, Source, Target, ToggleOp,
         TokenPattern,
     };
 
@@ -418,6 +418,16 @@ mod tests {
 
     fn parse_err(path: &std::path::Path) -> ConfigLoadError {
         parse(path).unwrap_err()
+    }
+
+    fn semantic_err_kind(mapping: &str) -> ErrorKind {
+        let dir = tempfile::tempdir().unwrap();
+        let root = write_file(&dir, "root.conf", &format!("@version 1\n{mapping}\n"));
+
+        match parse_err(&root) {
+            ConfigLoadError::Semantic(crate::config::lower::ConfigError { kind, .. }) => kind,
+            other => panic!("expected a semantic error for {mapping:?}, got {other:?}"),
+        }
     }
 
     fn protcool_err_span_text(mapping: &str) -> String {
@@ -1179,18 +1189,18 @@ group("reload") => sh("reload")
     fn legacy_ambiguous_combinations_need_a_higher_ranked_protocol() {
         for mapping in [
             // these are ambiguous with some named key's encoding
-            "key('h'~, ctrl) => send_key('y')", // backspace
-            "key('i'~, ctrl) => send_key('y')", // tab
-            "key('j'~, ctrl) => send_key('y')", // enter
-            "key('m'~, ctrl) => send_key('y')", // enter
-            "key('['~, ctrl) => send_key('y')", // esc
+            "key('h'~, ctrl) => send_key('y')",  // backspace
+            "key('i'~, ctrl) => send_key('y')",  // tab
+            "key('j'~, ctrl) => send_key('y')",  // enter
+            "key('m'~, ctrl) => send_key('y')",  // enter
+            "key('['~, ctrl) => send_key('y')",  // esc
             "key(enter, ctrl) => send_key('y')", // enter without ctrl
             // and these have no legacy encoding at all
             "key('1'~, ctrl) => send_key('y')", // only letters get the c0 byte encodings
             "key('a'~, ctrl & shift) => send_key('y')", // the ctrl encoding loses shift
             "key(' '~, shift) => send_key('y')", // no shifted form of space
             "key('a'~, meta) => send_key('y')", // no meta encoding
-            "key(esc, alt) => send_key('y')", // ESC ESC is indistinguishable from a lone esc
+            "key(esc, alt) => send_key('y')",   // ESC ESC is indistinguishable from a lone esc
             "key(kp_5, ctrl) => send_key('y')", // the keypad has no modifier form
         ] {
             _ = protcool_err_span_text(mapping); // asserts the error kind internally
@@ -1203,7 +1213,7 @@ group("reload") => sh("reload")
             "key('a'~, ctrl) => send_key('y')",
             "key('z'~, ctrl & alt) => send_key('y')",
             "key(' '~, ctrl) => send_key('y')", // ctrl+space is nul
-            "key('h'~, alt) => send_key('y')", // ctrl+h is problematic but not alt+h
+            "key('h'~, alt) => send_key('y')",  // ctrl+h is problematic but not alt+h
             "key('h'~, shift) => send_key('y')", // the shifted side stands in for the modifier
             "key(f1, ctrl & shift) => send_key('y')", // csi sequences carry a modifier bitfield
             "key(tab, alt) => send_key('y')",
@@ -1217,6 +1227,84 @@ group("reload") => sh("reload")
                 "{mapping:?} should be accepted under legacy",
             );
         }
+    }
+
+    #[test]
+    fn toggle_mappings_lowers_each_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r"
+@version 1
+key(f1) => toggle_mappings(on)
+key(f2) => toggle_mappings(off)
+always! key(f3) => toggle_mappings(toggle)
+",
+        );
+
+        let cfg = parse(&root).unwrap();
+
+        assert_eq!(
+            cfg.mappings[0].to,
+            Target::Action(Action::ToggleMappings(ToggleOp::On)),
+        );
+        assert_eq!(
+            cfg.mappings[1].to,
+            Target::Action(Action::ToggleMappings(ToggleOp::Off)),
+        );
+        assert_eq!(
+            cfg.mappings[2].to,
+            Target::Action(Action::ToggleMappings(ToggleOp::Toggle)),
+        );
+
+        assert!(!cfg.mappings[0].attrs.always);
+        assert!(cfg.mappings[2].attrs.always);
+    }
+
+    #[test]
+    fn toggle_mappings_cannot_be_a_source() {
+        assert!(matches!(
+            semantic_err_kind("toggle_mappings(off) => send_key('x')"),
+            ErrorKind::ActionAsSource,
+        ));
+    }
+
+    #[test]
+    fn toggle_mappings_rejects_bad_operations() {
+        assert!(matches!(
+            semantic_err_kind("key(f1) => toggle_mappings(nope)"),
+            ErrorKind::UnknownToggleOp { .. },
+        ));
+        assert!(matches!(
+            semantic_err_kind("key(f1) => toggle_mappings()"),
+            ErrorKind::BadEntityArgs {
+                kind: "toggle_mappings"
+            },
+        ));
+        assert!(matches!(
+            semantic_err_kind("key(f1) => toggle_mappings(on, off)"),
+            ErrorKind::BadEntityArgs {
+                kind: "toggle_mappings"
+            },
+        ));
+    }
+
+    #[test]
+    fn always_is_rejected_if_it_wouldnt_do_anything() {
+        // a group only ever resolves through expansion, which is never gated to begin with
+        assert!(matches!(
+            semantic_err_kind("define group \"g\"\nalways! group(\"g\") => toggle_mappings(on)",),
+            ErrorKind::InvalidAlwaysSource,
+        ));
+        assert!(matches!(
+            semantic_err_kind("always! always! key(f1) => toggle_mappings(on)"),
+            ErrorKind::DuplicateMappingAttr { kind: "always" },
+        ));
+        assert!(matches!(
+            semantic_err_kind("always!(1) key(f1) => toggle_mappings(on)"),
+            ErrorKind::BadMappingAttrArgs { kind: "always" },
+        ));
     }
 
     #[test]

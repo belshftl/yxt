@@ -348,6 +348,25 @@ pub enum CommandSpec {
 }
 
 // ================================================================================================
+// toggle mappings
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToggleOp {
+    On,
+    Off,
+    Toggle,
+}
+
+impl ToggleOp {
+    pub fn apply(self, enabled: bool) -> bool {
+        match self {
+            Self::On => true,
+            Self::Off => false,
+            Self::Toggle => !enabled,
+        }
+    }
+}
+
+// ================================================================================================
 // concrete sources / payloads
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
@@ -566,6 +585,7 @@ pub enum Event {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Command(CommandSpec),
+    ToggleMappings(ToggleOp),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -606,6 +626,7 @@ impl Target {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MappingAttrs {
     pub passthrough: bool,
+    pub always: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

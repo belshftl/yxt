@@ -66,17 +66,29 @@ impl Router {
         }
     }
 
-    pub fn fire(&self, input: RouteInput<'_>) -> Result<RouteResult, RouteError> {
+    pub fn fire(
+        &self,
+        input: RouteInput<'_>,
+        mappings_enabled: bool,
+    ) -> Result<RouteResult, RouteError> {
         let mut ctx = FireCtx::new(self.group_count);
-        self.fire_input(input, &mut ctx)?;
+        self.fire_input(input, !mappings_enabled, &mut ctx)?;
         Ok(RouteResult {
             matched: ctx.matched,
             effects: ctx.effects,
         })
     }
 
-    fn fire_input(&self, input: RouteInput<'_>, ctx: &mut FireCtx) -> Result<(), RouteError> {
+    fn fire_input(
+        &self,
+        input: RouteInput<'_>,
+        only_always: bool,
+        ctx: &mut FireCtx,
+    ) -> Result<(), RouteError> {
         for entry in &self.entries {
+            if only_always && !entry.attrs.always {
+                continue;
+            }
             let Some(payload) = match_source(&entry.from, input) else {
                 continue;
             };
@@ -137,7 +149,8 @@ impl Router {
 
     fn fire_group(&self, group: GroupId, ctx: &mut FireCtx) -> Result<(), RouteError> {
         ctx.push_group(group)?;
-        let result = self.fire_input(RouteInput::Group(group), ctx);
+        // a group fires from a mapping that already resolved, so it isn't gated again
+        let result = self.fire_input(RouteInput::Group(group), false, ctx);
         ctx.pop_group(group);
         result
     }
@@ -262,7 +275,7 @@ mod tests {
     use super::*;
 
     use crate::config::loader::ConfigLoader;
-    use crate::model::{Action, CommandSpec, Event, Key, Mods, Token};
+    use crate::model::{Action, CommandSpec, Event, Key, Mods, ToggleOp, Token};
 
     fn cfg(src: &str) -> crate::model::Config {
         let dir = tempfile::tempdir().unwrap();
@@ -277,21 +290,33 @@ mod tests {
 
     fn fire_key(router: &Router, key: Key, mods: Mods) -> RouteResult {
         let token = Token::press_key(key, mods);
-        router.fire(RouteInput::Token(&token)).unwrap()
+        router.fire(RouteInput::Token(&token), true).unwrap()
+    }
+
+    fn fire_key_while(
+        router: &Router,
+        key: Key,
+        mods: Mods,
+        mappings_enabled: bool,
+    ) -> RouteResult {
+        let token = Token::press_key(key, mods);
+        router
+            .fire(RouteInput::Token(&token), mappings_enabled)
+            .unwrap()
     }
 
     fn fire_utf8(router: &Router, ch: char, mods: Mods) -> RouteResult {
         let token = Token::press_utf8(ch, mods);
-        router.fire(RouteInput::Token(&token)).unwrap()
+        router.fire(RouteInput::Token(&token), true).unwrap()
     }
 
     fn fire_token(router: &Router, token: &Token) -> RouteResult {
-        router.fire(RouteInput::Token(token)).unwrap()
+        router.fire(RouteInput::Token(token), true).unwrap()
     }
 
     fn fire_sockdata(router: &Router, data: &[u8]) -> RouteResult {
         let event = Event::Sockdata(data.to_vec());
-        router.fire(RouteInput::Event(&event)).unwrap()
+        router.fire(RouteInput::Event(&event), true).unwrap()
     }
 
     #[test]
@@ -1189,6 +1214,110 @@ key('x'~'X') => sh("passthrough/result tokens must not re-enter router")
     }
 
     #[test]
+    fn toggling_mappings_off_makes_them_inert() {
+        let router = router(
+            r"
+@version 1
+key(f1) => send_key('x')
+",
+        );
+
+        assert!(fire_key(&router, Key::Function(1), Mods::EMPTY).matched);
+
+        let result = fire_key_while(&router, Key::Function(1), Mods::EMPTY, false);
+
+        assert!(!result.matched);
+        assert!(result.effects.is_empty());
+    }
+
+    #[test]
+    fn an_always_mapping_still_resolves_while_mappings_are_off() {
+        let router = router(
+            r"
+@version 1
+key(f1) => send_key('x')
+always! key(f2) => toggle_mappings(on)
+",
+        );
+
+        let result = fire_key_while(&router, Key::Function(2), Mods::EMPTY, false);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![RouteEffect::Action(Action::ToggleMappings(ToggleOp::On))],
+        );
+
+        assert!(!fire_key_while(&router, Key::Function(1), Mods::EMPTY, false).matched);
+    }
+
+    #[test]
+    fn each_toggle_operation_resolves_to_its_effect() {
+        let router = router(
+            r"
+@version 1
+key(f1) => toggle_mappings(on)
+key(f2) => toggle_mappings(off)
+key(f3) => toggle_mappings(toggle)
+",
+        );
+
+        for (n, op) in [(1, ToggleOp::On), (2, ToggleOp::Off), (3, ToggleOp::Toggle)] {
+            assert_eq!(
+                fire_key(&router, Key::Function(n), Mods::EMPTY).effects,
+                vec![RouteEffect::Action(Action::ToggleMappings(op))],
+                "f{n} did not resolve to {op:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_toggle_does_not_resolve_on_key_release() {
+        let router = router(
+            r"
+@version 1
+key('x'~) => toggle_mappings(toggle)
+",
+        );
+
+        let token = Token::Utf8 {
+            ch: 'x',
+            mods: Mods::EMPTY,
+            kind: KeyEventKind::Release,
+        };
+
+        let result = fire_token(&router, &token);
+
+        assert!(result.matched);
+        assert!(result.effects.is_empty());
+    }
+
+    #[test]
+    fn a_group_reached_from_an_always_mapping_is_not_gated_again() {
+        let router = router(
+            r#"
+@version 1
+define group "restore"
+
+always! key(f1) => group("restore")
+group("restore") => toggle_mappings(on)
+group("restore") => send_key('r')
+"#,
+        );
+
+        let result = fire_key_while(&router, Key::Function(1), Mods::EMPTY, false);
+
+        assert!(result.matched);
+        assert_eq!(
+            result.effects,
+            vec![
+                RouteEffect::Action(Action::ToggleMappings(ToggleOp::On)),
+                RouteEffect::Token(Token::press_utf8('r', Mods::EMPTY)),
+            ],
+        );
+    }
+
+    #[test]
     fn same_group_can_be_used_twice_if_not_recursive() {
         let router = router(
             r#"
@@ -1260,10 +1389,10 @@ group("b") => group("a")
         );
 
         let err = router
-            .fire(RouteInput::Token(&Token::press_key(
-                Key::Function(1),
-                Mods::EMPTY,
-            )))
+            .fire(
+                RouteInput::Token(&Token::press_key(Key::Function(1), Mods::EMPTY)),
+                true,
+            )
             .unwrap_err();
         assert!(matches!(err, RouteError::GroupCycle { .. }));
     }
@@ -1285,10 +1414,10 @@ group("c") => group("b")
         );
 
         let err = router
-            .fire(RouteInput::Token(&Token::press_key(
-                Key::Function(1),
-                Mods::EMPTY,
-            )))
+            .fire(
+                RouteInput::Token(&Token::press_key(Key::Function(1), Mods::EMPTY)),
+                true,
+            )
             .unwrap_err();
         #[allow(clippy::match_wildcard_for_single_variants)]
         match err {
@@ -1316,10 +1445,10 @@ group("b") => group("a")
         );
 
         let err = router
-            .fire(RouteInput::Token(&Token::press_key(
-                Key::Function(1),
-                Mods::EMPTY,
-            )))
+            .fire(
+                RouteInput::Token(&Token::press_key(Key::Function(1), Mods::EMPTY)),
+                true,
+            )
             .unwrap_err();
         assert!(matches!(err, RouteError::GroupCycle { .. }));
     }
@@ -1342,10 +1471,10 @@ key(f2) => send_key('x')
 
         assert!(
             router
-                .fire(RouteInput::Token(&Token::press_key(
-                    Key::Function(1),
-                    Mods::EMPTY
-                )))
+                .fire(
+                    RouteInput::Token(&Token::press_key(Key::Function(1), Mods::EMPTY)),
+                    true
+                )
                 .is_err()
         );
 

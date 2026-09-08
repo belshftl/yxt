@@ -9,7 +9,7 @@ use crate::model::{
     Action, CharPair, CommandSpec, Config, DefineGroupError, Direction, Event, GroupId, GroupTable,
     InheritToken, Key, KeyPattern, KeypadKey, Mapping, MappingAttrs, MediaKey, ModifierKey, Mods,
     ModsPattern, PayloadKind, Protocol, ProtocolRequest, ProtocolVerb, Service, Signal, Source,
-    Target, Token, TokenPattern,
+    Target, ToggleOp, Token, TokenPattern,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +152,14 @@ add '@protocol want {needs}' before any mappings"
 
     #[error("'passthrough!' mapping attribute is only valid for token sources")]
     InvalidPassthroughSource,
+
+    #[error(
+        "'always!' mapping attribute has no effect on a group mapping, which only ever resolves through expansion"
+    )]
+    InvalidAlwaysSource,
+
+    #[error("unknown toggle operation '{name}' (expected 'on', 'off' or 'toggle')")]
+    UnknownToggleOp { name: String },
 
     #[error("pair expressions are not supported here")]
     PairUnsupported,
@@ -493,7 +501,7 @@ impl ConfigBuilder {
                 kind: ErrorKind::InheritTokenAsSource,
                 span,
             }),
-            "exec" | "sh" => Err(ConfigError {
+            "exec" | "sh" | "toggle_mappings" => Err(ConfigError {
                 kind: ErrorKind::ActionAsSource,
                 span,
             }),
@@ -520,6 +528,9 @@ impl ConfigBuilder {
                 args, call_span,
             )?))),
             "sh" => Ok(Target::Action(Action::Command(lower_shell_command(
+                args, call_span,
+            )?))),
+            "toggle_mappings" => Ok(Target::Action(Action::ToggleMappings(lower_toggle_op(
                 args, call_span,
             )?))),
             "signal" | "sockdata_utf8" => Err(ConfigError {
@@ -581,6 +592,29 @@ fn lower_mapping_attrs(
                 }
                 out.passthrough = true;
             }
+            "always" => {
+                if !attr.args.is_empty() {
+                    return Err(ConfigError {
+                        kind: ErrorKind::BadMappingAttrArgs { kind: "always" },
+                        span: attr.span,
+                    });
+                }
+                if out.always {
+                    return Err(ConfigError {
+                        kind: ErrorKind::DuplicateMappingAttr { kind: "always" },
+                        span: attr.span,
+                    });
+                }
+                // a group only ever fires from a mapping that already resolved, so it's never
+                // gated in the first place
+                if matches!(from, Source::Group(_)) {
+                    return Err(ConfigError {
+                        kind: ErrorKind::InvalidAlwaysSource,
+                        span: attr.span,
+                    });
+                }
+                out.always = true;
+            }
             _ => {
                 return Err(ConfigError {
                     kind: ErrorKind::UnsupportedMappingAttr { name: attr.name },
@@ -590,6 +624,42 @@ fn lower_mapping_attrs(
         }
     }
     Ok(out)
+}
+
+fn lower_toggle_op(args: Vec<Expr>, span: Span) -> Result<ToggleOp, ConfigError> {
+    let mut args = args.into_iter();
+
+    let Some(Expr::Ident {
+        name,
+        span: op_span,
+    }) = args.next()
+    else {
+        return Err(ConfigError {
+            kind: ErrorKind::BadEntityArgs {
+                kind: "toggle_mappings",
+            },
+            span,
+        });
+    };
+
+    if args.next().is_some() {
+        return Err(ConfigError {
+            kind: ErrorKind::BadEntityArgs {
+                kind: "toggle_mappings",
+            },
+            span,
+        });
+    }
+
+    match name.as_str() {
+        "on" => Ok(ToggleOp::On),
+        "off" => Ok(ToggleOp::Off),
+        "toggle" => Ok(ToggleOp::Toggle),
+        _ => Err(ConfigError {
+            kind: ErrorKind::UnknownToggleOp { name },
+            span: op_span,
+        }),
+    }
 }
 
 fn lower_signal_source(args: Vec<Expr>, span: Span) -> Result<Source, ConfigError> {
@@ -1280,7 +1350,10 @@ mod tests {
     use crate::config::ast::{FileId, LineCtx};
 
     fn no_attrs() -> MappingAttrs {
-        MappingAttrs { passthrough: false }
+        MappingAttrs {
+            passthrough: false,
+            always: false,
+        }
     }
 
     fn sp() -> Span {
