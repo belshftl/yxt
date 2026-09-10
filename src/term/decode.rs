@@ -7,6 +7,7 @@ use super::{
     control::{self, ControlPrefix, CsiScan, StringControlKind, StringScan},
     kitty, legacy,
     mode::TermMode,
+    modify_other_keys,
 };
 use crate::model::{Key, KeyEventKind, Mods, Token};
 
@@ -201,7 +202,7 @@ fn decode_one(buf: &[u8], mode: TermMode, esc_byte_is_partial_esc: bool) -> Deco
         return decode_esc(buf, mode, esc_byte_is_partial_esc);
     }
 
-    if let Some(token) = legacy::decode_c0(first) {
+    if let Some(token) = legacy::decode_c0(first, mode) {
         return DecodeOne::Emit {
             item: Decoded::Token(token),
             consumed: 1,
@@ -250,6 +251,12 @@ fn decode_csi(buf: &[u8], mode: TermMode) -> DecodeOne {
             if let Some(tokens) = kitty::decode_csi_u(csi) {
                 return DecodeOne::EmitMany {
                     items: tokens.into_iter().map(Decoded::Token).collect(),
+                    consumed,
+                };
+            }
+            if let Some(token) = modify_other_keys::decode_csi_tilde(csi) {
+                return DecodeOne::Emit {
+                    item: Decoded::Token(token),
                     consumed,
                 };
             }
@@ -325,7 +332,7 @@ fn decode_alt_prefixed(buf: &[u8], mode: TermMode) -> DecodeOne {
     }
 }
 
-fn decode_one_non_esc(buf: &[u8], _mode: TermMode) -> DecodeOne {
+fn decode_one_non_esc(buf: &[u8], mode: TermMode) -> DecodeOne {
     let Some(&first) = buf.first() else {
         return DecodeOne::NeedMore(NeedMore::Utf8);
     };
@@ -335,7 +342,7 @@ fn decode_one_non_esc(buf: &[u8], _mode: TermMode) -> DecodeOne {
             item: Decoded::Unknown(vec![0x1b]),
             consumed: 1,
         }
-    } else if let Some(token) = legacy::decode_c0(first) {
+    } else if let Some(token) = legacy::decode_c0(first, mode) {
         DecodeOne::Emit {
             item: Decoded::Token(token),
             consumed: 1,
@@ -419,6 +426,7 @@ mod tests {
     const LEGACY: TermMode = TermMode {
         decckm: false,
         deckpam: false,
+        non_decbkm: false,
         kitty_flags: 0,
     };
 
@@ -438,6 +446,7 @@ mod tests {
             mode: TermMode {
                 decckm: false,
                 deckpam: false,
+                non_decbkm: false,
                 kitty_flags: kitty::FLAG_REPORT_ALL_KEYS | kitty::FLAG_REPORT_EVENT_TYPES,
             },
             esc_byte_is_partial_esc,
@@ -801,6 +810,37 @@ mod tests {
     }
 
     #[test]
+    fn bs_is_exclusively_backspace_unless_the_terminal_says_it_sends_del() {
+        // guessing this the wrong way around breaks backspace, so the default has to be the
+        // conservative one
+        assert_eq!(
+            decode_all(cfg(false), b"\x08"),
+            vec![key(Key::Backspace, Mods::EMPTY, KeyEventKind::Press)],
+        );
+        assert_eq!(
+            decode_all(cfg(false), b"\x7f"),
+            vec![key(Key::Backspace, Mods::EMPTY, KeyEventKind::Press)],
+        );
+
+        let mut config = cfg(false);
+        config.mode.non_decbkm = true;
+
+        assert_eq!(
+            decode_all(config, b"\x08"),
+            vec![utf8('h', Mods::CTRL, KeyEventKind::Press)],
+        );
+        assert_eq!(
+            decode_all(config, b"\x7f"),
+            vec![key(Key::Backspace, Mods::EMPTY, KeyEventKind::Press)],
+        );
+        // and alt+ctrl+h keeps working, since alt is only an esc in front of the same byte
+        assert_eq!(
+            decode_all(config, b"\x1b\x08"),
+            vec![utf8('h', Mods::ALT | Mods::CTRL, KeyEventKind::Press)],
+        );
+    }
+
+    #[test]
     fn the_models_legacy_text_claims_match_what_the_decoder_produces() {
         let mut inputs = Vec::new();
         for byte in 0u8..=0x7f {
@@ -814,9 +854,14 @@ mod tests {
             inputs.push(encoded);
         }
 
+        // it's guaranteed that the terminal is encoding backspace as DEL if a mapping wants it (and
+        // the protocol is legacy), so hold it to the same mode
+        let mut config = cfg(false);
+        config.mode.non_decbkm = true;
+
         let mut produced = std::collections::HashSet::new();
         for input in &inputs {
-            for item in decode_all(cfg(false), input) {
+            for item in decode_all(config, input) {
                 if let Decoded::Token(Token::Utf8 { ch, mods, .. }) = item {
                     produced.insert((ch, mods));
                 }
@@ -846,7 +891,8 @@ mod tests {
                 shifted: ch,
             });
             for m in mods {
-                let claims_legacy = pattern.required_protocol(m) == crate::model::Protocol::Legacy;
+                let claims_legacy =
+                    pattern.required_protocol(m, true) == crate::model::Protocol::Legacy;
                 assert_eq!(
                     claims_legacy,
                     produced.contains(&(ch, m)),

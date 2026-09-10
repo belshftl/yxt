@@ -8,6 +8,11 @@ use crate::term::query::QueriedTermMode;
 pub struct TermMode {
     pub decckm: bool,
     pub deckpam: bool,
+    /// Whether DECBKM is reset, i.e. backspace sends DEL/0x7f rather than BS/0x08, which means BS
+    /// unambiguously means ctrl+h. Named for its absence because incorrectly guessing that DECBKM
+    /// is reset breaks backspace, whereas incorrectly guessing that it's set is mostly harmless, so
+    /// it's named in a way that false is the conservative assumption.
+    pub non_decbkm: bool,
     pub kitty_flags: u8,
 }
 
@@ -51,6 +56,7 @@ impl KittyState {
 pub struct TerminalModeTracker {
     decckm: bool,
     deckpam: bool,
+    non_decbkm: bool,
     alt_screen: bool,
     main_kitty: KittyState,
     alt_kitty: KittyState,
@@ -61,6 +67,7 @@ impl TerminalModeTracker {
         Self {
             decckm: false,
             deckpam: false,
+            non_decbkm: false,
             alt_screen: false,
             main_kitty: KittyState::new(),
             alt_kitty: KittyState::new(),
@@ -75,6 +82,9 @@ impl TerminalModeTracker {
         if let Some(deckpam) = query.deckpam {
             tracker.deckpam = deckpam;
         }
+        if let Some(decbkm) = query.decbkm {
+            tracker.non_decbkm = !decbkm.sends_bs();
+        }
         if let Some(alt_screen) = query.alt_screen {
             tracker.alt_screen = alt_screen;
         }
@@ -88,6 +98,7 @@ impl TerminalModeTracker {
         TermMode {
             decckm: self.decckm,
             deckpam: self.deckpam,
+            non_decbkm: self.non_decbkm,
             kitty_flags: self.active_kitty().flags,
         }
     }
@@ -131,6 +142,7 @@ impl TerminalModeTracker {
     fn apply_dec_private_mode(&mut self, param: u32, enabled: bool) {
         match param {
             1 => self.decckm = enabled,
+            67 => self.non_decbkm = !enabled,
             47 | 1047 | 1049 => self.alt_screen = enabled,
             _ => {}
         }
@@ -249,6 +261,7 @@ mod tests {
             TermMode {
                 decckm: false,
                 deckpam: false,
+                non_decbkm: false,
                 kitty_flags: 0,
             },
         );
@@ -311,6 +324,7 @@ mod tests {
             TermMode {
                 decckm: false,
                 deckpam: false,
+                non_decbkm: false,
                 kitty_flags: 0,
             },
         );
@@ -524,6 +538,7 @@ mod tests {
             TermMode {
                 decckm: true,
                 deckpam: true,
+                non_decbkm: false,
                 kitty_flags: 0,
             },
         );
@@ -534,6 +549,7 @@ mod tests {
             TermMode {
                 decckm: true,
                 deckpam: true,
+                non_decbkm: false,
                 kitty_flags: 0,
             },
         );
@@ -553,6 +569,7 @@ mod tests {
             TermMode {
                 decckm: false,
                 deckpam: false,
+                non_decbkm: false,
                 kitty_flags: 0,
             },
         );

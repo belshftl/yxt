@@ -11,15 +11,35 @@ use crate::unix::fd::{ReadyFds, SelectFds, select};
 // `CSI ? u`       kitty keyboard flags, answered as `CSI ? flags u`
 // `CSI ? Ps $ p`  DECRQM, answered as `CSI ? Ps ; Pv $ y`
 // `CSI c`         DA1, answered as `CSI ? ... c`, which is used as an ending sentinel
-const QUERY: &[u8] = b"\x1b[?u\x1b[?1$p\x1b[?66$p\x1b[?47$p\x1b[?1047$p\x1b[?1049$p\x1b[c";
+const QUERY: &[u8] =
+    b"\x1b[?u\x1b[?1$p\x1b[?66$p\x1b[?67$p\x1b[?47$p\x1b[?1047$p\x1b[?1049$p\x1b[c";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct QueriedTermMode {
     pub decckm: Option<bool>,
     pub deckpam: Option<bool>,
+    pub decbkm: Option<Decbkm>,
     pub alt_screen: Option<bool>,
     pub kitty_flags: Option<u8>,
     pub complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decbkm {
+    Set,
+    PermSet,
+    Reset,
+    PermReset,
+}
+
+impl Decbkm {
+    pub fn sends_bs(self) -> bool {
+        matches!(self, Self::Set | Self::PermSet)
+    }
+
+    pub fn is_changeable(self) -> bool {
+        matches!(self, Self::Set | Self::Reset)
+    }
 }
 
 impl QueriedTermMode {
@@ -53,6 +73,16 @@ impl QueriedTermMode {
             return;
         }
         // DECRPM: 1 set, 2 reset, 3 permanently set, 4 permanently reset, 0 unrecognized
+        if params[0] == 67 {
+            self.decbkm = match params[1] {
+                1 => Some(Decbkm::Set),
+                2 => Some(Decbkm::Reset),
+                3 => Some(Decbkm::PermSet),
+                4 => Some(Decbkm::PermReset),
+                _ => None,
+            };
+            return;
+        }
         let state = match params[1] {
             1 | 3 => true,
             2 | 4 => false,

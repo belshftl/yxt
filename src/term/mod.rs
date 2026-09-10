@@ -7,5 +7,6 @@ pub mod encode;
 pub mod kitty;
 pub mod legacy;
 pub mod mode;
+pub mod modify_other_keys;
 pub mod negotiate;
 pub mod query;

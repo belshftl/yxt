@@ -46,7 +46,7 @@ use crate::runtime::router::{RouteEffect, RouteInput, Router};
 use crate::term::decode::{Decoded, Decoder, DecoderConfig};
 use crate::term::encode::Encoder;
 use crate::term::negotiate::{self, RestoreGuard, TermProxy};
-use crate::term::query::query_term_mode;
+use crate::term::query::{Decbkm, query_term_mode};
 use crate::unix::child::{
     ChildEnv, ChildExt, ChildSpawnOptions, ChildStdio, OsCommandSpec, PtyChild,
     PtyChildSpawnOptions, PtyChildStdin, spawn_pty_attached,
@@ -410,20 +410,34 @@ try '--help' for more info
         Duration::from_millis(config.options.mode_query_timeout_ms),
     )?;
     let negotiation = negotiate::plan(&config, queried)?;
+
+    let mut queried = queried;
+    let force_backspace_del = negotiate::plan_backspace_del(&config, queried)?;
+    if config.options.force_backspace_sends_del {
+        // safe to set because if the terminal doesn't allow it the call above should've already failed
+        queried.decbkm = Some(Decbkm::Reset);
+    }
+
     let mut proxy = TermProxy::new(queried, negotiation);
-    let _restore = if let Some(enable) = proxy.enable_sequence() {
-        let guard = RestoreGuard::new(stdout.as_fd());
-        if !write_all_until(
+
+    let mut enable = proxy.enable_sequence().unwrap_or_default();
+    let mut restore = proxy.restore_sequence();
+    if force_backspace_del {
+        enable.extend_from_slice(negotiate::BACKSPACE_DEL_SEQUENCE);
+        restore.extend_from_slice(negotiate::BACKSPACE_BS_SEQUENCE);
+    }
+
+    // the guard goes up before the write so a partial write still gets undone
+    let _restore = (!restore.is_empty()).then(|| RestoreGuard::new(stdout.as_fd(), restore));
+    if !enable.is_empty()
+        && !write_all_until(
             stdout.as_fd(),
             &enable,
             Instant::now() + NEGOTIATE_WRITE_TIMEOUT,
-        )? {
-            return Err(AppError::NegotiateWriteTimeout);
-        }
-        Some(guard)
-    } else {
-        None
-    };
+        )?
+    {
+        return Err(AppError::NegotiateWriteTimeout);
+    }
 
     let mut actions = ActionManager::new(child_opts.clone());
     let mut services = ServiceManager::start(&config.services, &child_opts, SHUTDOWN_GRACE)?;

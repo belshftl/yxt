@@ -7,17 +7,19 @@ use super::{
 };
 use crate::model::{Direction, Key, KeyEventKind, KeypadKey, Mods, Token};
 
-pub fn decode_c0(byte: u8) -> Option<Token> {
+pub fn decode_c0(byte: u8, mode: TermMode) -> Option<Token> {
     // the name is slightly inaccurate, this also checks DEL and c < 0x20
     match byte {
         b'\0' => Some(Token::press_utf8(' ', Mods::CTRL)),
         b'\t' => Some(Token::press_key(Key::Tab, Mods::EMPTY)),
         b'\n' | b'\r' => Some(Token::press_key(Key::Enter, Mods::EMPTY)),
         0x1b => Some(Token::press_key(Key::Esc, Mods::EMPTY)),
+        // with DECBKM reset the terminal encodes backspace as DEL, so BS is ctrl+h
+        0x08 if mode.non_decbkm => Some(Token::press_utf8('h', Mods::CTRL)),
         0x08 | 0x7f => Some(Token::press_key(Key::Backspace, Mods::EMPTY)),
         1..=31 => {
-            let table = b"abcdefghijklmnopqrstuvwxyz[\\]^_";
-            let ch = char::from(table[usize::from(byte - 1)]);
+            const TABLE: &[u8] = b"abcdefghijklmnopqrstuvwxyz[\\]^_";
+            let ch = char::from(TABLE[usize::from(byte - 1)]);
             Some(Token::press_utf8(ch, Mods::CTRL))
         }
         _ => None,
@@ -71,6 +73,32 @@ pub fn decode_ss3(body: &[u8], mode: TermMode) -> Option<Token> {
     Some(Token::press_key(key, Mods::EMPTY))
 }
 
+/// Decodes the modifier bitfield on csi/vt sequences.
+///
+/// <https://invisible-island.net/xterm/ctlseqs/ctlseqs.html>, "PC-Style Function Keys". It's
+/// written as a table there, but it's a plain bitfield with 1 added.
+pub fn decode_mod_param(param: u32) -> Option<Mods> {
+    let bits = param.checked_sub(1)?; // remove the aforementioned 1
+    if bits & !0b1111 != 0 {
+        return None; // malformed input
+    }
+
+    let mut mods = Mods::EMPTY;
+    if bits & 1 != 0 {
+        mods |= Mods::SHIFT;
+    }
+    if bits & 2 != 0 {
+        mods |= Mods::ALT;
+    }
+    if bits & 4 != 0 {
+        mods |= Mods::CTRL;
+    }
+    if bits & 8 != 0 {
+        mods |= Mods::META;
+    }
+    Some(mods)
+}
+
 pub fn decode_csi(csi: CsiSeq<'_>, mode: TermMode) -> Option<Token> {
     if !csi.intermediates.is_empty() {
         return None;
@@ -81,31 +109,9 @@ pub fn decode_csi(csi: CsiSeq<'_>, mode: TermMode) -> Option<Token> {
     let m = params.get(1).copied().unwrap_or(0);
     let param_count = params.len();
 
-    // https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
-    // PC-Style Function Keys
-    //
-    // it's a table there but it's basically a bitfield with 1 added
+    // do nothing on 0 or 1, which both mean no modifiers
     let mods = if param_count > 1 && m > 1 {
-        // do nothing on 0 or 1 (1-1 = 0)
-        let bits = m - 1; // remove the aforementioned 1
-        if bits & !0b1111 != 0 {
-            return None; // malformed input
-        }
-
-        let mut mods = Mods::EMPTY;
-        if bits & 1 != 0 {
-            mods |= Mods::SHIFT;
-        }
-        if bits & 2 != 0 {
-            mods |= Mods::ALT;
-        }
-        if bits & 4 != 0 {
-            mods |= Mods::CTRL;
-        }
-        if bits & 8 != 0 {
-            mods |= Mods::META;
-        }
-        mods
+        decode_mod_param(m)?
     } else {
         Mods::EMPTY
     };
@@ -432,29 +438,39 @@ mod tests {
         TermMode {
             decckm,
             deckpam,
+            non_decbkm: false,
             kitty_flags: 0,
         }
     }
 
     #[test]
     fn decodes_c0_control_letters() {
-        assert_eq!(decode_c0(1), Some(Token::press_utf8('a', Mods::CTRL)),);
-        assert_eq!(decode_c0(26), Some(Token::press_utf8('z', Mods::CTRL)),);
-        assert_eq!(decode_c0(27), Some(Token::press_key(Key::Esc, Mods::EMPTY)),);
+        assert_eq!(
+            decode_c0(1, mode(false, false)),
+            Some(Token::press_utf8('a', Mods::CTRL)),
+        );
+        assert_eq!(
+            decode_c0(26, mode(false, false)),
+            Some(Token::press_utf8('z', Mods::CTRL)),
+        );
+        assert_eq!(
+            decode_c0(27, mode(false, false)),
+            Some(Token::press_key(Key::Esc, Mods::EMPTY)),
+        );
     }
 
     #[test]
     fn decodes_c0_common_keys() {
         assert_eq!(
-            decode_c0(b'\t'),
+            decode_c0(b'\t', mode(false, false)),
             Some(Token::press_key(Key::Tab, Mods::EMPTY)),
         );
         assert_eq!(
-            decode_c0(b'\r'),
+            decode_c0(b'\r', mode(false, false)),
             Some(Token::press_key(Key::Enter, Mods::EMPTY)),
         );
         assert_eq!(
-            decode_c0(0x7f),
+            decode_c0(0x7f, mode(false, false)),
             Some(Token::press_key(Key::Backspace, Mods::EMPTY)),
         );
     }

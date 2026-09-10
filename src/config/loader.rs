@@ -1176,8 +1176,8 @@ group("reload") => sh("reload")
     fn protocol_err_span_is_all_the_args_for_a_problematic_combination() {
         // neither half is a problem on its own, so there is no one argument to blame
         assert_eq!(
-            protcool_err_span_text("key('h'~, ctrl) => inherit_key('d'~)"),
-            "'h'~, ctrl"
+            protcool_err_span_text("key('i'~, ctrl) => inherit_key('d'~)"),
+            "'i'~, ctrl"
         );
         assert_eq!(
             protcool_err_span_text("key(tab, ctrl) => send_key('y')"),
@@ -1189,7 +1189,8 @@ group("reload") => sh("reload")
     fn legacy_ambiguous_combinations_need_a_higher_ranked_protocol() {
         for mapping in [
             // these are ambiguous with some named key's encoding
-            "key('h'~, ctrl) => send_key('y')",  // backspace
+            // (ctrl+h is not among them: it collides with backspace only while the terminal
+            // encodes that as BS, which `term::negotiate` sorts out per-terminal instead)
             "key('i'~, ctrl) => send_key('y')",  // tab
             "key('j'~, ctrl) => send_key('y')",  // enter
             "key('m'~, ctrl) => send_key('y')",  // enter
@@ -1212,7 +1213,7 @@ group("reload") => sh("reload")
         for mapping in [
             "key('a'~, ctrl) => send_key('y')",
             "key('z'~, ctrl & alt) => send_key('y')",
-            "key(' '~, ctrl) => send_key('y')", // ctrl+space is nul
+            "key(' '~, ctrl) => send_key('y')", // ctrl+space is NUL
             "key('h'~, alt) => send_key('y')",  // ctrl+h is problematic but not alt+h
             "key('h'~, shift) => send_key('y')", // the shifted side stands in for the modifier
             "key(f1, ctrl & shift) => send_key('y')", // csi sequences carry a modifier bitfield
@@ -1227,6 +1228,136 @@ group("reload") => sh("reload")
                 "{mapping:?} should be accepted under legacy",
             );
         }
+    }
+
+    #[test]
+    fn ctrl_h_is_told_about_the_option_that_would_fix_it() {
+        let kind = semantic_err_kind("key('h'~, ctrl) => send_key('y')");
+
+        assert!(
+            matches!(kind, ErrorKind::CtrlHNeedsBackspaceDel { .. }),
+            "ctrl+h should get its own diagnostic, got {kind:?}",
+        );
+
+        // not fixable with an option, so it gets the plain error
+        assert!(matches!(
+            semantic_err_kind("key('i'~, ctrl) => send_key('y')"),
+            ErrorKind::SourceNeedsProtocol { .. },
+        ));
+
+        // the option isn't enough on its own, ctrl+h being in there or not
+        assert!(matches!(
+            semantic_err_kind("key('h'~, ctrl & super) => send_key('y')"),
+            ErrorKind::SourceNeedsProtocol { .. },
+        ));
+        assert!(matches!(
+            semantic_err_kind("key('h'~, ctrl || super) => send_key('y')"),
+            ErrorKind::SourceNeedsProtocol { .. },
+        ));
+
+        // alt is reported by legacy anyways so the option is all that's needed
+        assert!(matches!(
+            semantic_err_kind("key('h'~, ctrl || alt) => send_key('y')"),
+            ErrorKind::CtrlHNeedsBackspaceDel { .. },
+        ));
+    }
+
+    #[test]
+    fn force_backspace_sends_del_makes_ctrl_h_reportable() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r"
+@version 1
+force_backspace_sends_del = true
+key('h'~, ctrl) => send_key('y')
+key('h'~, ctrl & alt) => send_key('y')
+",
+        );
+
+        let cfg = parse(&root).unwrap();
+
+        assert!(cfg.options.force_backspace_sends_del);
+        assert_eq!(cfg.mappings.len(), 2);
+    }
+
+    #[test]
+    fn statements_must_appear_in_phase_order() {
+        // an option after a mapping would be read too late to affect it
+        assert!(matches!(
+            semantic_err_kind("key(f1) => send_key('y')\nforce_backspace_sends_del = true"),
+            ErrorKind::OutOfOrderStatement { .. },
+        ));
+        // same for a directive after
+        assert!(matches!(
+            semantic_err_kind("esc_byte_is_partial_esc = true\n@protocol want kitty"),
+            ErrorKind::OutOfOrderStatement { .. },
+        ));
+        assert!(matches!(
+            semantic_err_kind("key(f1) => send_key('y')\n@service \"s\" sh(\"true\")"),
+            ErrorKind::OutOfOrderStatement { .. },
+        ));
+
+        // definitions and mappings share the last phase, so they interleave freely
+        let dir = tempfile::tempdir().unwrap();
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
+@version 1
+@protocol want kitty
+esc_byte_is_partial_esc = true
+define group "a"
+key(f1) => group("a")
+define group "b"
+group("a") => group("b")
+"#,
+        );
+        assert!(parse(&root).is_ok());
+    }
+
+    #[test]
+    fn include_order_is_checked_flattened_not_per_file() {
+        // each file is tidy on its own; only the flattened stream shows the mapping arriving
+        // ahead of the option that decides how it is read
+        let dir = tempfile::tempdir().unwrap();
+        write_file(&dir, "keys.conf", "@version 1\nkey(f1) => send_key('y')\n");
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
+@version 1
+@include "keys.conf"
+force_backspace_sends_del = true
+"#,
+        );
+
+        assert!(matches!(
+            parse_err(&root),
+            ConfigLoadError::Semantic(crate::config::lower::ConfigError {
+                kind: ErrorKind::OutOfOrderStatement { .. },
+                ..
+            }),
+        ));
+
+        // the other way round it is fine, and the include's mapping sees the option
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            &dir,
+            "keys.conf",
+            "@version 1\nkey('h'~, ctrl) => send_key('y')\n",
+        );
+        let root = write_file(
+            &dir,
+            "root.conf",
+            r#"
+@version 1
+force_backspace_sends_del = true
+@include "keys.conf"
+"#,
+        );
+        assert_eq!(parse(&root).unwrap().mappings.len(), 1);
     }
 
     #[test]
@@ -1358,7 +1489,7 @@ key(f1) => send_key('x')
         assert!(matches!(
             err,
             ConfigLoadError::Semantic(crate::config::lower::ConfigError {
-                kind: ErrorKind::ProtocolAfterMappings,
+                kind: ErrorKind::OutOfOrderStatement { .. },
                 ..
             }),
         ));

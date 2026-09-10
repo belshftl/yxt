@@ -9,6 +9,7 @@ pub struct Options {
     pub log_file: String,
     pub mode_query_timeout_ms: u64,
     pub esc_byte_is_partial_esc: bool,
+    pub force_backspace_sends_del: bool,
     pub partial_utf8_timeout_ms: u64,
     pub partial_esc_timeout_ms: u64,
     pub partial_st_timeout_ms: u64,
@@ -21,6 +22,7 @@ impl Default for Options {
             log_file: String::new(),
             mode_query_timeout_ms: 40,
             esc_byte_is_partial_esc: false,
+            force_backspace_sends_del: false,
             partial_utf8_timeout_ms: 10,
             partial_esc_timeout_ms: 15,
             partial_st_timeout_ms: 40,
@@ -37,6 +39,9 @@ impl Options {
                 self.mode_query_timeout_ms = expect_positive_int(name, value, span)?;
             }
             "esc_byte_is_partial_esc" => self.esc_byte_is_partial_esc = expect_bool(value, span)?,
+            "force_backspace_sends_del" => {
+                self.force_backspace_sends_del = expect_bool(value, span)?;
+            }
             "partial_utf8_timeout" => {
                 self.partial_utf8_timeout_ms = expect_positive_int(name, value, span)?;
             }

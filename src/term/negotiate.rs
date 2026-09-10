@@ -32,9 +32,42 @@ pub enum NegotiateError {
     Unsupported(&'static str),
 
     #[error(
-        "the terminal didn't finish answering the capability query, so whether it supports the '{0}' keyboard protocol couldn't be confirmed; raise 'mode_query_timeout_ms' if the terminal is merely slow (e.g. slow ssh/serial connection)"
+        "\
+the terminal didn't finish answering the capability query, so whether it supports the '{0}' \
+keyboard protocol couldn't be confirmed; raise 'mode_query_timeout_ms' if the terminal is merely \
+slow (e.g. slow ssh/serial connection)"
     )]
     QueryIncomplete(&'static str),
+
+    #[error(
+        "\
+the config sets 'force_backspace_sends_del', but this terminal doesn't support it; it reports \
+backspace as permamently locked to sending BS (i.e. DECBKM is perm-set)"
+    )]
+    BackspaceLockedToBs,
+}
+
+pub const BACKSPACE_DEL_SEQUENCE: &[u8] = b"\x1b[?67l";
+pub const BACKSPACE_BS_SEQUENCE: &[u8] = b"\x1b[?67h";
+
+/// Whether [`BACKSPACE_DEL_SEQUENCE`] needs to be sent, given what the terminal reported.
+///
+/// This only refuses if the terminal reports DECBKM as perm-set. Not implementing DECBKM is not the
+/// same as encoding backspace as BS, and most terminals that don't implement it send DEL (TODO:
+/// that claim needs some more concrete backing).
+pub fn plan_backspace_del(
+    config: &Config,
+    queried: QueriedTermMode,
+) -> Result<bool, NegotiateError> {
+    if !config.options.force_backspace_sends_del {
+        return Ok(false);
+    }
+
+    match queried.decbkm {
+        Some(decbkm) if decbkm.sends_bs() && decbkm.is_changeable() => Ok(true),
+        Some(decbkm) if decbkm.sends_bs() => Err(NegotiateError::BackspaceLockedToBs),
+        _ => Ok(false),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +188,13 @@ impl TermProxy {
         let desired = self.desired_upstream_flags();
         self.last_sent_flags = Some(desired);
         Some(kitty::push_flags_sequence(desired))
+    }
+
+    pub fn restore_sequence(&self) -> Vec<u8> {
+        match self.negotiated_flags {
+            Some(_) => kitty::POP_FLAGS_SEQUENCE.to_vec(),
+            None => Vec::new(),
+        }
     }
 
     pub fn push(
@@ -287,21 +327,18 @@ impl TermProxy {
 #[derive(Debug)]
 pub struct RestoreGuard<'a> {
     fd: BorrowedFd<'a>,
+    sequence: Vec<u8>,
 }
 
 impl<'a> RestoreGuard<'a> {
-    pub fn new(fd: BorrowedFd<'a>) -> Self {
-        Self { fd }
+    pub fn new(fd: BorrowedFd<'a>, sequence: Vec<u8>) -> Self {
+        Self { fd, sequence }
     }
 }
 
 impl Drop for RestoreGuard<'_> {
     fn drop(&mut self) {
-        _ = write_all_until(
-            self.fd,
-            kitty::POP_FLAGS_SEQUENCE,
-            Instant::now() + RESTORE_TIMEOUT,
-        );
+        _ = write_all_until(self.fd, &self.sequence, Instant::now() + RESTORE_TIMEOUT);
     }
 }
 
@@ -313,6 +350,7 @@ mod tests {
     use crate::model::{ProtocolRequest, ProtocolVerb};
     use crate::term::decode::{Decoded, Decoder, DecoderConfig};
     use crate::term::encode::Encoder;
+    use crate::term::query::Decbkm;
 
     fn cfg(src: &str) -> Config {
         let dir = tempfile::tempdir().unwrap();
@@ -327,6 +365,7 @@ mod tests {
             deckpam: Some(false),
             alt_screen: Some(false),
             kitty_flags,
+            decbkm: None,
             complete: true,
         }
     }
@@ -348,6 +387,17 @@ mod tests {
         let mut to_child = Vec::new();
         let outcome = proxy.push(bytes, &mut to_terminal, &mut to_child);
         (to_terminal, to_child, outcome)
+    }
+
+    fn with_decbkm(decbkm: Option<Decbkm>) -> QueriedTermMode {
+        QueriedTermMode {
+            decbkm,
+            ..queried(None)
+        }
+    }
+
+    fn backspace_del_cfg() -> Config {
+        cfg("@version 1\nforce_backspace_sends_del = true\n")
     }
 
     #[test]
@@ -721,5 +771,61 @@ key(left_super) => send_key('x')
         assert!(p.upstream_mode().decckm);
         assert!(p.downstream_mode().decckm);
         assert!(p.upstream_mode().deckpam);
+    }
+
+    #[test]
+    fn backspace_is_left_alone_unless_the_option_asks_for_it() {
+        // no mapping is consulted: the option is the whole of the decision
+        let plain = cfg("@version 1\nkey('h'~, any) => send_key('y')\n");
+
+        for decbkm in [
+            None,
+            Some(Decbkm::Set),
+            Some(Decbkm::PermSet),
+            Some(Decbkm::Reset),
+            Some(Decbkm::PermReset),
+        ] {
+            assert_eq!(
+                plan_backspace_del(&plain, with_decbkm(decbkm)),
+                Ok(false),
+                "{decbkm:?} should have been left alone",
+            );
+        }
+    }
+
+    #[test]
+    fn the_terminal_is_only_asked_to_switch_if_it_has_to() {
+        // xterm: sends BS but lets that be changed, so ask it to
+        assert_eq!(
+            plan_backspace_del(&backspace_del_cfg(), with_decbkm(Some(Decbkm::Set))),
+            Ok(true),
+        );
+
+        // vte: already sends DEL, so there is nothing to ask for and nothing to put back
+        assert_eq!(
+            plan_backspace_del(&backspace_del_cfg(), with_decbkm(Some(Decbkm::Reset))),
+            Ok(false),
+        );
+        assert_eq!(
+            plan_backspace_del(&backspace_del_cfg(), with_decbkm(Some(Decbkm::PermReset))),
+            Ok(false),
+        );
+    }
+
+    #[test]
+    fn a_terminal_that_says_nothing_falls_back_to_the_configs_word() {
+        // not implementing DECBKM is not the same as encoding backspace as BS
+        assert_eq!(
+            plan_backspace_del(&backspace_del_cfg(), with_decbkm(None)),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn the_option_is_refused_if_the_terminal_contradicts_it() {
+        assert_eq!(
+            plan_backspace_del(&backspace_del_cfg(), with_decbkm(Some(Decbkm::PermSet))),
+            Err(NegotiateError::BackspaceLockedToBs),
+        );
     }
 }

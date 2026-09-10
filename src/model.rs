@@ -448,10 +448,10 @@ pub enum KeyPattern {
 }
 
 impl KeyPattern {
-    pub fn required_protocol(&self, mods: Mods) -> Protocol {
+    pub fn required_protocol(&self, mods: Mods, backspace_sends_del: bool) -> Protocol {
         let legacy = match self {
             Self::Named(key) => legacy_reports_key(*key, mods),
-            Self::CharPair(pair) => legacy_reports_char_pair(*pair, mods),
+            Self::CharPair(pair) => legacy_reports_char_pair(*pair, mods, backspace_sends_del),
         };
         if legacy {
             Protocol::Legacy
@@ -483,24 +483,25 @@ fn legacy_reports_key(key: Key, mods: Mods) -> bool {
     (mods & !carries) == Mods::EMPTY
 }
 
-fn legacy_reports_char_pair(pair: CharPair, mods: Mods) -> bool {
+fn legacy_reports_char_pair(pair: CharPair, mods: Mods, backspace_sends_del: bool) -> bool {
     if (mods & Mods::SHIFT) == Mods::EMPTY {
-        legacy_reports_char(pair.unshifted, mods)
+        legacy_reports_char(pair.unshifted, mods, backspace_sends_del)
     } else {
         // shift isn't even a modifier under legacy, all that changes is the shifted side of the
         // pair standing in for the unshifted one, so the two must differ
-        pair.unshifted != pair.shifted && legacy_reports_char(pair.shifted, mods & !Mods::SHIFT)
+        pair.unshifted != pair.shifted
+            && legacy_reports_char(pair.shifted, mods & !Mods::SHIFT, backspace_sends_del)
     }
 }
 
-fn legacy_reports_char(ch: char, mods: Mods) -> bool {
+fn legacy_reports_char(ch: char, mods: Mods, backspace_sends_del: bool) -> bool {
     // alt is only an esc prefix, so it doesn't change what the rest of the sequence can express
     let alt = (mods & Mods::ALT) != Mods::EMPTY;
 
     if (mods & !Mods::ALT) == Mods::CTRL {
         // ctrl turns the character into a c0 byte, and no such byte introduces a sequence, so the
         // esc prefix stays unambiguous here
-        legacy_reports_ctrl_char(ch)
+        legacy_reports_ctrl_char(ch, backspace_sends_del)
     } else if (mods & !Mods::ALT) == Mods::EMPTY {
         // c0 or del always decodes as the corresponding named key, not as text
         ch >= ' ' && ch != '\u{7f}' && !(alt && esc_ch_starts_sequence(ch))
@@ -516,10 +517,15 @@ fn esc_ch_starts_sequence(ch: char) -> bool {
     matches!(ch, 'N' | 'O' | 'P' | 'X' | '[' | ']' | '^' | '_')
 }
 
-fn legacy_reports_ctrl_char(ch: char) -> bool {
-    // 0x08 backspace (ctrl+h), 0x09 tab (ctrl+i), 0x0a and 0x0d enter (ctrl+j, ctrl+m),
-    // 0x1b esc (ctrl+[)
-    // ctrl+space makes it as nul
+fn legacy_reports_ctrl_char(ch: char, backspace_sends_del: bool) -> bool {
+    // ctrl+h is the one collision that a config can do something about; if backspace is DEL rather
+    // than BS then BS unambiguously means ctrl+h
+    if ch == 'h' {
+        return backspace_sends_del;
+    }
+
+    // 0x09 tab (ctrl+i), 0x0a and 0x0d enter (ctrl+j, ctrl+m), 0x1b esc (ctrl+[)
+    // ctrl+space makes it as NUL
     matches!(ch, ' ' | 'a'..='g' | 'k' | 'l' | 'n'..='z' | '\\' | ']' | '^' | '_')
 }
 

@@ -98,13 +98,28 @@ pub enum ErrorKind {
     #[error("unknown protocol '{name}'")]
     UnknownProtocol { name: String },
 
-    #[error("'@protocol' must come before any mappings")]
-    ProtocolAfterMappings,
+    #[error(
+        "\
+{what} cannot come after {after}; a config is ordered as '@version', then other directives, then \
+options, then mappings and definitions"
+    )]
+    OutOfOrderStatement { what: String, after: &'static str },
+
+    #[error(
+        "\
+ctrl+h is indistinguishable from backspace under the '{have}' protocol; either set \
+'force_backspace_sends_del = true' before any mappings if the terminal can encode backspace as \
+DEL (i.e. supports DECBKM=reset), or add '@protocol want {needs}' before any options/mappings"
+    )]
+    CtrlHNeedsBackspaceDel {
+        needs: &'static str,
+        have: &'static str,
+    },
 
     #[error(
         "\
 this needs the '{needs}' protocol, whereas only '{have}' is specified; \
-add '@protocol want {needs}' before any mappings"
+add '@protocol want {needs}' before any options/mappings"
     )]
     SourceNeedsProtocol {
         needs: &'static str,
@@ -226,8 +241,27 @@ pub struct ConfigError {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+enum Phase {
+    #[default]
+    Directive,
+    Option,
+    Mapping,
+}
+
+impl Phase {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Directive => "a directive",
+            Self::Option => "an option",
+            Self::Mapping => "a mapping or definition",
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ConfigBuilder {
+    phase: Phase,
     options: Options,
     protocol: ProtocolRequest,
     groups: GroupTable,
@@ -238,6 +272,7 @@ pub struct ConfigBuilder {
 
 impl ConfigBuilder {
     pub fn apply_stmt(&mut self, stmt: Stmt) -> Result<(), ConfigError> {
+        self.check_order(&stmt)?;
         match stmt {
             Stmt::Directive { name, args, span } => self.apply_directive(name, args, span),
             Stmt::Definition { kind, args, span } => self.apply_definition(kind, args, span),
@@ -250,6 +285,32 @@ impl ConfigBuilder {
             } => self.apply_mapping(attrs, lhs, op, rhs, span),
             Stmt::OptionAssignment { name, val, span } => self.options.set(name, val, span),
         }
+    }
+
+    fn check_order(&mut self, stmt: &Stmt) -> Result<(), ConfigError> {
+        let phase = match stmt {
+            Stmt::Directive { .. } => Phase::Directive,
+            Stmt::OptionAssignment { .. } => Phase::Option,
+            Stmt::Mapping { .. } | Stmt::Definition { .. } => Phase::Mapping,
+        };
+
+        if phase < self.phase {
+            let what = match stmt {
+                Stmt::Directive { name, .. } => format!("directive '@{name}'"),
+                Stmt::OptionAssignment { name, .. } => format!("option '{name}'"),
+                Stmt::Mapping { .. } | Stmt::Definition { .. } => "a mapping".to_owned(),
+            };
+            return Err(ConfigError {
+                kind: ErrorKind::OutOfOrderStatement {
+                    what,
+                    after: self.phase.name(),
+                },
+                span: stmt.span(),
+            });
+        }
+
+        self.phase = phase;
+        Ok(())
     }
 
     pub fn finish(self) -> Config {
@@ -283,13 +344,6 @@ impl ConfigBuilder {
     }
 
     fn apply_protocol(&mut self, args: &[Expr], span: Span) -> Result<(), ConfigError> {
-        if !self.mappings.is_empty() {
-            return Err(ConfigError {
-                kind: ErrorKind::ProtocolAfterMappings,
-                span,
-            });
-        }
-
         let [verb, protocol] = args else {
             return Err(ConfigError {
                 kind: ErrorKind::BadDirectiveArgs { kind: "protocol" },
@@ -443,10 +497,13 @@ impl ConfigBuilder {
         if let Some(need) = need
             && need.protocol > self.protocol.protocol
         {
+            let needs = need.protocol.name();
+            let have = self.protocol.protocol.name();
             return Err(ConfigError {
-                kind: ErrorKind::SourceNeedsProtocol {
-                    needs: need.protocol.name(),
-                    have: self.protocol.protocol.name(),
+                kind: if fixed_by_backspace_del(&from, self.options.force_backspace_sends_del) {
+                    ErrorKind::CtrlHNeedsBackspaceDel { needs, have }
+                } else {
+                    ErrorKind::SourceNeedsProtocol { needs, have }
                 },
                 span: need.span,
             });
@@ -491,7 +548,7 @@ impl ConfigBuilder {
         match name.as_str() {
             "signal" => Ok((lower_signal_source(args, call_span)?, None)),
             "sockdata_utf8" => Ok((lower_sockdata_utf8_source(args, call_span)?, None)),
-            "key" => lower_key_source(args, call_span),
+            "key" => lower_key_source(args, call_span, self.options.force_backspace_sends_del),
             "group" => Ok((Source::Group(self.lower_group_id(args, call_span)?), None)),
             "send_key" => Err(ConfigError {
                 kind: ErrorKind::SendTokenAsSource,
@@ -684,6 +741,7 @@ fn lower_sockdata_utf8_source(args: Vec<Expr>, span: Span) -> Result<Source, Con
 fn lower_key_source(
     args: Vec<Expr>,
     span: Span,
+    backspace_sends_del: bool,
 ) -> Result<(Source, Option<ProtocolNeed>), ConfigError> {
     let mut args = args.into_iter();
     let Some(key_expr) = args.next() else {
@@ -714,7 +772,9 @@ fn lower_key_source(
         ModsPattern::Any => None,
         ModsPattern::AnyOf(alts) => alts
             .iter()
-            .map(|alt| ProtocolNeed::of(key.required_protocol(*alt), args_span))
+            .map(|alt| {
+                ProtocolNeed::of(key.required_protocol(*alt, backspace_sends_del), args_span)
+            })
             .fold(None, ProtocolNeed::max),
     };
 
@@ -723,6 +783,28 @@ fn lower_key_source(
         // the more precisely blamed needs come first so that they win an equal-rank tie
         ProtocolNeed::max(ProtocolNeed::max(key_need, mods_need), combined_need),
     ))
+}
+
+fn fixed_by_backspace_del(source: &Source, already_on: bool) -> bool {
+    if already_on {
+        return false;
+    }
+
+    let Source::Token(TokenPattern::Key {
+        key,
+        mods: ModsPattern::AnyOf(alts),
+    }) = source
+    else {
+        return false;
+    };
+
+    // in practice this means ctrl+h is involved; check by comparing whether it's reportable with
+    // the option off vs on rather than hardcoding in two spots
+    alts.iter()
+        .any(|m| key.required_protocol(*m, false) != Protocol::Legacy)
+        && alts
+            .iter()
+            .all(|m| key.required_protocol(*m, true) == Protocol::Legacy)
 }
 
 fn lower_send_key(args: Vec<Expr>, span: Span) -> Result<Target, ConfigError> {
@@ -1745,7 +1827,7 @@ mod tests {
             protocol_want("kitty"),
         ]);
 
-        assert!(matches!(e, ErrorKind::ProtocolAfterMappings));
+        assert!(matches!(e, ErrorKind::OutOfOrderStatement { .. }));
     }
 
     #[test]
