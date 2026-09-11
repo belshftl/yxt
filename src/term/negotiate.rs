@@ -60,8 +60,8 @@ pub const BACKSPACE_BS_SEQUENCE: &[u8] = b"\x1b[?67h";
 /// Whether [`BACKSPACE_DEL_SEQUENCE`] needs to be sent, given what the terminal reported.
 ///
 /// This only refuses if the terminal reports DECBKM as perm-set. Not implementing DECBKM is not the
-/// same as encoding backspace as BS, and most terminals that don't implement it send DEL (TODO:
-/// that claim needs some more concrete backing).
+/// same as encoding backspace as BS; whether terminals that don't implement it send DEL in practice
+/// is an open question that needs an afternoon of testing at some point.
 pub fn plan_backspace_del(
     config: &Config,
     queried: QueriedTermMode,
