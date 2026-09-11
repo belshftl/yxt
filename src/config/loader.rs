@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use super::ast::{Expr, FileId, LineCtx, Literal, Span, Stmt};
 use super::lower::{ConfigBuilder, ConfigError};
+use super::options::Options;
 use super::parse::{ParseError, parse_line};
 use crate::model::Config;
 
@@ -113,13 +114,13 @@ pub struct ConfigLoader {
 }
 
 impl ConfigLoader {
-    pub fn new() -> Self {
+    pub fn new(options: Options) -> Self {
         Self {
             sources: SourceMap::default(),
             include_stack: Vec::new(),
             version: None,
             seen_non_version_stmt: false,
-            builder: ConfigBuilder::default(),
+            builder: ConfigBuilder::with_options(options),
         }
     }
 
@@ -398,10 +399,12 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::config::lower::ErrorKind;
+    use crate::config::options::Options;
     use crate::model::{
         Action, CommandSpec, Event, Key, KeyPattern, Mods, ModsPattern, Source, Target, ToggleOp,
         TokenPattern,
     };
+    use crate::term::negotiate::PUSH_OVERHEAD_BYTES;
 
     fn write_file(dir: &TempDir, rel: &str, text: &str) -> std::path::PathBuf {
         let path = dir.path().join(rel);
@@ -413,7 +416,7 @@ mod tests {
     }
 
     fn parse(path: &std::path::Path) -> Result<crate::model::Config, ConfigLoadError> {
-        ConfigLoader::new().parse_file(path)
+        ConfigLoader::new(crate::config::options::Options::default()).parse_file(path)
     }
 
     fn parse_err(path: &std::path::Path) -> ConfigLoadError {
@@ -1358,6 +1361,112 @@ force_backspace_sends_del = true
 "#,
         );
         assert_eq!(parse(&root).unwrap().mappings.len(), 1);
+    }
+
+    #[test]
+    fn a_preset_is_a_baseline_atop_which_is_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = write_file(
+            &dir,
+            "root.conf",
+            "@version 1\npartial_esc_timeout_ms = 7\n",
+        );
+
+        // what the file doesn't set keeps the preset's value; what it does set wins
+        let cfg = ConfigLoader::new(Options::high_latency())
+            .parse_file(&root)
+            .unwrap();
+
+        assert_eq!(cfg.options.partial_esc_timeout_ms, 7);
+        assert_eq!(
+            cfg.options.mode_query_timeout_ms,
+            Options::high_latency().mode_query_timeout_ms,
+        );
+    }
+
+    #[test]
+    fn the_high_latency_preset_only_changes_whats_affected_by_rtt() {
+        let local = Options::default();
+        let remote = Options::high_latency();
+
+        for (name, a, b) in [
+            (
+                "mode_query",
+                local.mode_query_timeout_ms,
+                remote.mode_query_timeout_ms,
+            ),
+            (
+                "partial_utf8",
+                local.partial_utf8_timeout_ms,
+                remote.partial_utf8_timeout_ms,
+            ),
+            (
+                "partial_esc",
+                local.partial_esc_timeout_ms,
+                remote.partial_esc_timeout_ms,
+            ),
+            (
+                "partial_st",
+                local.partial_st_timeout_ms,
+                remote.partial_st_timeout_ms,
+            ),
+            (
+                "terminal_write",
+                local.terminal_write_timeout_ms,
+                remote.terminal_write_timeout_ms,
+            ),
+        ] {
+            assert!(b > a, "{name} should be longer under the preset");
+        }
+
+        // local process exit and the expansion guards have nothing to do with a link
+        assert_eq!(local.shutdown_grace_ms, remote.shutdown_grace_ms);
+        assert_eq!(local.pty_input_queue_bytes, remote.pty_input_queue_bytes);
+        assert_eq!(
+            local.terminal_output_queue_bytes,
+            remote.terminal_output_queue_bytes,
+        );
+        assert_eq!(
+            local.max_pending_decoder_bytes,
+            remote.max_pending_decoder_bytes
+        );
+    }
+
+    #[test]
+    fn a_queue_too_small_to_work_is_rejected() {
+        // below this the child's output is never read at all, so it would hang rather than
+        // misbehave visibly; the floor comes from the proxy rather than being picked
+        for value in [0, 1, PUSH_OVERHEAD_BYTES] {
+            assert!(
+                matches!(
+                    semantic_err_kind(&format!("terminal_output_queue_bytes = {value}")),
+                    ErrorKind::OptionTooSmall { .. },
+                ),
+                "{value} should have been rejected",
+            );
+        }
+
+        assert!(matches!(
+            semantic_err_kind("pty_input_queue_bytes = 0"),
+            ErrorKind::OptionTooSmall { .. },
+        ));
+
+        // one past the floor is allowed, so the bound isn't off by one
+        let dir = tempfile::tempdir().unwrap();
+        let root = write_file(
+            &dir,
+            "root.conf",
+            &format!(
+                "@version 1\nterminal_output_queue_bytes = {}\npty_input_queue_bytes = 1\n",
+                PUSH_OVERHEAD_BYTES + 1,
+            ),
+        );
+        let cfg = parse(&root).unwrap();
+        assert_eq!(
+            cfg.options.terminal_output_queue_bytes,
+            PUSH_OVERHEAD_BYTES + 1
+        );
+        assert_eq!(cfg.options.pty_input_queue_bytes, 1);
     }
 
     #[test]

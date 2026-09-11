@@ -7,6 +7,10 @@ use std::time::{Duration, Instant};
 use crate::model::{CommandSpec, Service};
 use crate::unix::child::{ChildError, ChildSpawnOptions, OsCommandSpec, spawn};
 
+/// One scheduler tick at the traditional `HZ=100`. Only reached at service spawn failure, which
+/// runs before the event loop and so has no `select` to wait on instead and must poll.
+const REAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 pub struct ActionManager {
     options: ChildSpawnOptions,
     children: Vec<Child>,
@@ -253,7 +257,7 @@ impl ServiceManager {
                         }
                         manager.services.retain(|sv| !sv.is_done());
                         if !manager.services.is_empty() {
-                            std::thread::sleep(Duration::from_millis(10));
+                            std::thread::sleep(REAP_POLL_INTERVAL);
                         }
                     }
 

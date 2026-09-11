@@ -17,12 +17,19 @@ const BASE_KITTY_FLAGS: u8 = kitty::FLAG_DISAMBIGUATE_ESCAPE_CODES | kitty::FLAG
 // extra that's turned on for kitty if a mapping needs a key only ever reported as an escape code
 const ALL_KEYS_KITTY_FLAGS: u8 = kitty::FLAG_REPORT_ALL_KEYS | kitty::FLAG_REPORT_ASSOCIATED_TEXT;
 
-// how long to wait for the terminal to take the sequence to restore terminal state on shutdown
-const RESTORE_TIMEOUT: Duration = Duration::from_millis(40);
+/// Length beyond which a partially scanned sequence cannot be one we suppress. The longest is a
+/// well-formed kitty flag set with both fields at their widest, `CSI = 255 ; 4294967295 u`.
+const MAX_CANDIDATE_BYTES: usize = 18;
 
-// length beyond which a partially scanned sequence is for sure not one we need to suppress
-// intentionally a big overestimate
-const MAX_CANDIDATE_BYTES: usize = 32;
+/// The most [`TermProxy::push`] can add to `to_terminal` on top of the bytes it was given.
+///
+/// Two things can go above the input length:
+/// - a flag sequence the proxy injects itself, at most `CSI = 255 u` i.e. 7 bytes,
+/// - and a partially scanned sequence held back by an earlier push and flushed by this one, at most
+///   [`MAX_CANDIDATE_BYTES`].
+///
+/// Callers must keep this much spare room in whatever they push into.
+pub const PUSH_OVERHEAD_BYTES: usize = MAX_CANDIDATE_BYTES + 7;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NegotiateError {
@@ -328,17 +335,22 @@ impl TermProxy {
 pub struct RestoreGuard<'a> {
     fd: BorrowedFd<'a>,
     sequence: Vec<u8>,
+    timeout: Duration,
 }
 
 impl<'a> RestoreGuard<'a> {
-    pub fn new(fd: BorrowedFd<'a>, sequence: Vec<u8>) -> Self {
-        Self { fd, sequence }
+    pub fn new(fd: BorrowedFd<'a>, sequence: Vec<u8>, timeout: Duration) -> Self {
+        Self {
+            fd,
+            sequence,
+            timeout,
+        }
     }
 }
 
 impl Drop for RestoreGuard<'_> {
     fn drop(&mut self) {
-        _ = write_all_until(self.fd, &self.sequence, Instant::now() + RESTORE_TIMEOUT);
+        _ = write_all_until(self.fd, &self.sequence, Instant::now() + self.timeout);
     }
 }
 
@@ -356,7 +368,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.conf");
         std::fs::write(&path, src).unwrap();
-        ConfigLoader::new().parse_file(&path).unwrap()
+        ConfigLoader::new(crate::config::options::Options::default())
+            .parse_file(&path)
+            .unwrap()
     }
 
     fn queried(kitty_flags: Option<u8>) -> QueriedTermMode {
@@ -546,6 +560,65 @@ key(left_super) => send_key('x')
         let (to_terminal, ..) = push(&mut p, format!("\x1b[{params}0m").as_bytes());
 
         assert_eq!(to_terminal, format!("\x1b[{params}0m").as_bytes());
+    }
+
+    #[test]
+    fn a_push_never_outruns_its_reserved_headroom() {
+        let mut p = proxy(Some(BASE_KITTY_FLAGS));
+
+        // the interesting ones hold bytes back and flush them on a later, smaller push
+        let chunks: &[&[u8]] = &[
+            b"\x1b[1;",       // a passthrough csi, held partway in
+            b"m\x1b[?1049hx", // flushes it, passes a screen switch, and injects on top
+            b"\x1b[=",        // a kitty control, held part way in
+            b"5u",            // completes it, suppressed, injecting instead
+            b"\x1b[?1049l",
+            b"\x1b[1;2;3;4;5;6;7;8;9", // long enough to give up on holding and stream
+            b"m",
+            b"plain text",
+        ];
+
+        for chunk in chunks {
+            let (to_terminal, ..) = push(&mut p, chunk);
+
+            assert!(
+                to_terminal.len() <= chunk.len() + PUSH_OVERHEAD_BYTES,
+                "{} bytes out for {} in, past the {PUSH_OVERHEAD_BYTES} reserved",
+                to_terminal.len(),
+                chunk.len(),
+            );
+        }
+    }
+
+    #[test]
+    fn a_csi_longer_than_a_candidate_still_arrives_whole() {
+        let mut p = proxy(Some(BASE_KITTY_FLAGS));
+
+        // between the candidate bound and what it used to be, so this is the range the shrink
+        // moved from "held while scanning" to "streamed through"
+        for params in ["1;2;3;4;5;6;7;8;9", "1;2;3;4;5;6;7;8;9;10;11"] {
+            let seq = format!("\x1b[{params}m");
+            assert!((19..=32).contains(&seq.len()), "{} is off-range", seq.len());
+
+            let (to_terminal, to_child, _) = push(&mut p, seq.as_bytes());
+
+            assert_eq!(to_terminal, seq.as_bytes());
+            assert!(to_child.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_kitty_control_at_its_widest_is_still_caught() {
+        let mut p = proxy(Some(BASE_KITTY_FLAGS));
+
+        // exactly the sequence MAX_CANDIDATE_BYTES is based on
+        let widest = b"\x1b[=255;4294967295u";
+        assert_eq!(widest.len(), MAX_CANDIDATE_BYTES);
+
+        let (to_terminal, ..) = push(&mut p, widest);
+
+        // suppressed and re-derived rather than passed along
+        assert_ne!(to_terminal, widest);
     }
 
     #[test]

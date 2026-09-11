@@ -7,6 +7,9 @@ use std::time::Instant;
 
 use crate::unix::fd::{SelectFds, select};
 
+/// glibc's `BUFSIZ`, i.e. the size stdio itself uses when nothing better is known.
+pub const READ_BUFFER_BYTES: usize = 8192;
+
 #[derive(Debug)]
 pub struct ByteQueue {
     buf: Box<[u8]>,

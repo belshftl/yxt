@@ -4,7 +4,7 @@
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
-use crate::runtime::io::{ReadResult, read, write_all_until};
+use crate::runtime::io::{READ_BUFFER_BYTES, ReadResult, read, write_all_until};
 use crate::term::control::{ControlEvent, ControlScanner, CsiSeq, parse_simple_params};
 use crate::unix::fd::{ReadyFds, SelectFds, select};
 
@@ -112,7 +112,7 @@ pub fn query_term_mode<F: AsFd>(term: &F, timeout: Duration) -> std::io::Result<
     }
 
     let mut scanner = ControlScanner::default();
-    let mut buf = [0u8; 512];
+    let mut buf = [0u8; READ_BUFFER_BYTES];
     let fds = SelectFds {
         read: vec![(QueryFd::Term, term)],
         write: Vec::new(),

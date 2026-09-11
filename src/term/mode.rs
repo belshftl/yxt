@@ -16,7 +16,13 @@ pub struct TermMode {
     pub kitty_flags: u8,
 }
 
-const KITTY_STACK_LIMIT: usize = 64;
+/// Max stack depth of the simulated kitty stack.
+///
+/// The spec doesn't mention a min/max stack depth and only explicitly mentions eviction /
+/// alt-screen / pop-makes-stack-empty policy, which we already follow in [`KittyState`].
+/// Kitty itself uses a max stack depth of 8, and foot, ghostty, and rio all independently use the
+/// same value, so it's the closest thing to a convention.
+const KITTY_STACK_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
 struct KittyState {

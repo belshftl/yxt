@@ -150,6 +150,13 @@ add '@protocol want {needs}' before any options/mappings"
     #[error("bad value for option '{name}': {desc}")]
     BadOptionValue { name: String, desc: &'static str },
 
+    #[error("option '{name}' must be greater than {min}: {why}")]
+    OptionTooSmall {
+        name: String,
+        min: usize,
+        why: &'static str,
+    },
+
     #[error("unknown entity '{name}'")]
     UnknownEntity { name: String },
 
@@ -271,6 +278,13 @@ pub struct ConfigBuilder {
 }
 
 impl ConfigBuilder {
+    pub fn with_options(options: Options) -> Self {
+        Self {
+            options,
+            ..Self::default()
+        }
+    }
+
     pub fn apply_stmt(&mut self, stmt: Stmt) -> Result<(), ConfigError> {
         self.check_order(&stmt)?;
         match stmt {

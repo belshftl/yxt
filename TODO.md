@@ -1,7 +1,6 @@
 roughly highest to lowest priority, though order may change at any time
 
 to v0.1:
-- bring some more consistency to the timeouts/etc scattered across various configurable options and constants and such, and add a `--high-latency` preset; the two realistic modern usecases are a terminal emulator, which has a tiny near negligible latency, and a ssh/network connection which can have a very high latency if ping is high
 - collect notes on terminal behavior / empirical observations / compatibility across terminals / per-terminal quirks / etc. in a separate markdown file, aimed at potential other developers rather than users; the TODO on the doc comment in `term::negotiate::plan_backspace_del` is a good example of what could go there, and said doc comment would then reference it
 - write more doc comments; the current policy is that things that can be derived from just being surface-level familiar with the model/codebase and reading the code for the module/type/function/field of interest should not get doc comments, and they should be reserved for truly hard to independently deduce semantics or behavior, or things that seem like unintentionalities/bugs at first glance, but plenty of such things currently lack doc comments
 - write a new readme from scratch; should probably not be too reference-y, document the basics and the common "remap some keys" usecase but leave the details to the manpage

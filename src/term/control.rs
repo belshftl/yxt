@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
-pub const DEFAULT_MAX_CSI_BYTES: usize = 128;
+/// xterm accepts 30 parameters in a csi sequence, each at most three digits plus a separator,
+/// leaving room for a private marker, intermediates, and the final byte.
+pub const DEFAULT_MAX_CSI_BYTES: usize = 126;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlScannerConfig {

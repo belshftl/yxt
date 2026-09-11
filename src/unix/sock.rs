@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 // that includes the null terminator, so limit to 91 bytes
 const MAX_UNIX_SOCKET_PATH_BYTES: usize = 91;
 
+/// glibc's `BUFSIZ`, same as the read buffers; control messages are far shorter than this.
+pub const MAX_DATAGRAM_BYTES: usize = 8192;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ControlSockError {
     #[cfg(not(target_os = "macos"))]

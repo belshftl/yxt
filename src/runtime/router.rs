@@ -281,7 +281,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.conf");
         std::fs::write(&path, src).unwrap();
-        ConfigLoader::new().parse_file(&path).unwrap()
+        ConfigLoader::new(crate::config::options::Options::default())
+            .parse_file(&path)
+            .unwrap()
     }
 
     fn router(src: &str) -> Router {

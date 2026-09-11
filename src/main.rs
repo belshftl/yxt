@@ -35,17 +35,18 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::config::loader::ConfigLoader;
+use crate::config::options::Options;
 use crate::model::{Action, Event, Signal, Source};
 use crate::runtime::children::{ActionManager, ServiceManager};
 use crate::runtime::cli::{Cli, config_path};
 use crate::runtime::io::{
-    ByteQueue, ReadResult, WriteResult, WriteToPtyResult, drain_from_queue,
+    ByteQueue, READ_BUFFER_BYTES, ReadResult, WriteResult, WriteToPtyResult, drain_from_queue,
     drain_to_pty_from_queue, read_tty, write_all_until,
 };
 use crate::runtime::router::{RouteEffect, RouteInput, Router};
 use crate::term::decode::{Decoded, Decoder, DecoderConfig};
 use crate::term::encode::Encoder;
-use crate::term::negotiate::{self, RestoreGuard, TermProxy};
+use crate::term::negotiate::{self, PUSH_OVERHEAD_BYTES, RestoreGuard, TermProxy};
 use crate::term::query::{Decbkm, query_term_mode};
 use crate::unix::child::{
     ChildEnv, ChildExt, ChildSpawnOptions, ChildStdio, OsCommandSpec, PtyChild,
@@ -54,7 +55,7 @@ use crate::unix::child::{
 use crate::unix::fd::{NonblockingFd, ReadyFds, SelectFds, is_rdwr, select};
 use crate::unix::pledge::try_pledge;
 use crate::unix::signal::{SignalError, SignalRegistry};
-use crate::unix::sock::{ControlSock, default_sock_path};
+use crate::unix::sock::{ControlSock, MAX_DATAGRAM_BYTES, default_sock_path};
 use crate::unix::tty::{RawTerminal, get_winsize, same_terminal, set_winsize};
 
 const SENSITIVE_CHILD_BASENAMES: &[&str] = &[
@@ -179,9 +180,6 @@ run with --allow-sensitive-child to run anyways"
         "PTY input queue of {0} bytes is full; child is not consuming its input or mapping expanded too much, bailing out"
     )]
     MasterQueueFull(usize),
-
-    #[error("terminal output queue of {0} bytes is full, bailing out")]
-    StdoutQueueFull(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,10 +208,6 @@ fn main() {
 
 fn run(argv0: &str) -> Result<i32, AppError> {
     // --------------------------------------------------------------
-
-    const SHUTDOWN_GRACE: Duration = Duration::from_millis(300);
-    const NEGOTIATE_WRITE_TIMEOUT: Duration = Duration::from_millis(300);
-    const PROXY_INJECT_HEADROOM: usize = 32; // at most CSI = flags u per chunk of child output
 
     fn apply_effect(
         effect: &RouteEffect,
@@ -275,6 +269,7 @@ fn run(argv0: &str) -> Result<i32, AppError> {
         pty_child: &PtyChild,
         sig: Option<libc::c_int>,
         child_kill_deadline: &mut Option<Instant>,
+        grace: Duration,
         now: Instant,
     ) -> Result<(), AppError> {
         if *stopping {
@@ -284,7 +279,7 @@ fn run(argv0: &str) -> Result<i32, AppError> {
         services.begin_shutdown(now)?;
         if let Some(sig) = sig {
             pty_child.child.signal(sig).ok();
-            *child_kill_deadline = Some(now + SHUTDOWN_GRACE);
+            *child_kill_deadline = Some(now + grace);
         }
         Ok(())
     }
@@ -303,7 +298,8 @@ options:
   -c, --config <PATH>          config file to use
       --sock <PATH>            path of the created socket (computes a unique one by default)
       --no-implicit-config     don't use an implicit config if found
-      --allow-sensitive-child  allow running with children in a \"sensitive\" blocklist (e.g sudo, pinentry...)
+  -L, --high-latency           use default timeouts tuned for a high-ping link/ssh rather than a local terminal
+      --allow-sensitive-child  allow running with children in a \"sensitive\" blocklist (e.g. sudo, pinentry...)
       --check-config           parse config and exit
       --dump-config            parse config, print parse result, and exit
   -h, --help                   display this help and exit
@@ -335,7 +331,12 @@ try '--help' for more info
     .join("implicit");
     std::fs::create_dir_all(&implicit_config_dir)?;
     let config_path = config_path(&cli, &implicit_config_dir)?;
-    let mut loader = ConfigLoader::new();
+    let base_options = if cli.high_latency {
+        Options::high_latency()
+    } else {
+        Options::default()
+    };
+    let mut loader = ConfigLoader::new(base_options);
     let config = match loader.parse_file(config_path.as_ref()) {
         Ok(c) => c,
         Err(e) => {
@@ -360,6 +361,9 @@ try '--help' for more info
         return Err(AppError::SensitiveChild(child_name.to_owned()));
     }
 
+    let terminal_write_timeout = Duration::from_millis(config.options.terminal_write_timeout_ms);
+    let shutdown_grace = Duration::from_millis(config.options.shutdown_grace_ms);
+
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
 
@@ -380,7 +384,7 @@ try '--help' for more info
     }
 
     let sock_path = cli.sock.map_or_else(|| default_sock_path("yxt"), Ok)?;
-    let sock = ControlSock::bind(&sock_path, 8192)?;
+    let sock = ControlSock::bind(&sock_path, MAX_DATAGRAM_BYTES)?;
 
     try_pledge("stdio rpath tty proc exec", None)?;
 
@@ -428,19 +432,20 @@ try '--help' for more info
     }
 
     // the guard goes up before the write so a partial write still gets undone
-    let _restore = (!restore.is_empty()).then(|| RestoreGuard::new(stdout.as_fd(), restore));
+    let _restore = (!restore.is_empty())
+        .then(|| RestoreGuard::new(stdout.as_fd(), restore, terminal_write_timeout));
     if !enable.is_empty()
         && !write_all_until(
             stdout.as_fd(),
             &enable,
-            Instant::now() + NEGOTIATE_WRITE_TIMEOUT,
+            Instant::now() + terminal_write_timeout,
         )?
     {
         return Err(AppError::NegotiateWriteTimeout);
     }
 
     let mut actions = ActionManager::new(child_opts.clone());
-    let mut services = ServiceManager::start(&config.services, &child_opts, SHUTDOWN_GRACE)?;
+    let mut services = ServiceManager::start(&config.services, &child_opts, shutdown_grace)?;
 
     let child_spec = OsCommandSpec::Exec { argv: cli.command };
     let mut pty_child = spawn_pty_attached(
@@ -484,12 +489,12 @@ try '--help' for more info
     let mut encoder = Encoder::new(proxy.downstream_mode());
     let router = Router::new(&config);
 
-    let mut term_buf = vec![0u8; 8192].into_boxed_slice();
-    let mut pty_buf = vec![0u8; 8192].into_boxed_slice();
+    let mut term_buf = vec![0u8; READ_BUFFER_BYTES].into_boxed_slice();
+    let mut pty_buf = vec![0u8; READ_BUFFER_BYTES].into_boxed_slice();
     let mut to_terminal = Vec::new();
     let mut to_child = Vec::new();
-    let mut master_queue = ByteQueue::new(32768);
-    let mut stdout_queue = ByteQueue::new(8192);
+    let mut master_queue = ByteQueue::new(config.options.pty_input_queue_bytes);
+    let mut stdout_queue = ByteQueue::new(config.options.terminal_output_queue_bytes);
     let mut mode_dirty = false;
     let mut mappings_enabled = true;
     let mut stopping = false;
@@ -506,6 +511,7 @@ try '--help' for more info
                 &pty_child,
                 None,
                 &mut child_kill_deadline,
+                shutdown_grace,
                 now,
             )?;
             child_down_or_forgotten = true;
@@ -557,7 +563,7 @@ try '--help' for more info
                 read.push((FdKey::TermIn, stdout.as_fd()));
                 read.push((FdKey::Sock, sock.as_fd()));
             }
-            if stdout_queue.remaining() > PROXY_INJECT_HEADROOM {
+            if stdout_queue.remaining() > PUSH_OVERHEAD_BYTES {
                 read.push((FdKey::PtyMaster, pty_child.pty_master.as_fd()));
             }
             if !stdout_queue.is_empty() {
@@ -600,6 +606,7 @@ try '--help' for more info
                             &pty_child,
                             None,
                             &mut child_kill_deadline,
+                            shutdown_grace,
                             now,
                         )?;
                         child_down_or_forgotten = true;
@@ -612,7 +619,7 @@ try '--help' for more info
         if ready.readable(FdKey::PtyMaster) {
             let room = stdout_queue
                 .remaining()
-                .saturating_sub(PROXY_INJECT_HEADROOM)
+                .saturating_sub(PUSH_OVERHEAD_BYTES)
                 .min(pty_buf.len());
             debug_assert!(
                 room > 0,
@@ -625,9 +632,11 @@ try '--help' for more info
                     to_child.clear();
                     let outcome = proxy.push(&pty_buf[..n], &mut to_terminal, &mut to_child);
 
+                    // the read above is capped to leave `PUSH_OVERHEAD_BYTES` spare, which is
+                    // the highest amount the proxy can add on top, so this should always fit
                     stdout_queue
                         .push(&to_terminal)
-                        .map_err(|_| AppError::StdoutQueueFull(stdout_queue.capacity()))?;
+                        .expect("proxy should never output more than the headroom reserved for it");
                     master_queue
                         .push(&to_child)
                         .map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?;
@@ -648,6 +657,7 @@ try '--help' for more info
                         &pty_child,
                         None,
                         &mut child_kill_deadline,
+                        shutdown_grace,
                         now,
                     )?;
                     child_down_or_forgotten = true;
@@ -668,6 +678,7 @@ try '--help' for more info
                             &pty_child,
                             Some(sig),
                             &mut child_kill_deadline,
+                            shutdown_grace,
                             now,
                         )?;
                         continue 'mainloop;
@@ -732,6 +743,7 @@ try '--help' for more info
                             &pty_child,
                             Some(libc::SIGTERM),
                             &mut child_kill_deadline,
+                            shutdown_grace,
                             now,
                         )?;
                         continue 'mainloop;
