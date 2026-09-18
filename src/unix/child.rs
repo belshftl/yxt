@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
+use anyhow::{Context as _, bail};
 use std::ffi::OsString;
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use super::tty::{PtyOpenError, dup_fd, open_pty_pair, set_winsize, switch_to_ctty};
+use super::tty::{dup_fd, open_pty_pair, set_winsize, switch_to_ctty};
 
 pub trait ChildExt {
     fn signal(&self, sig: libc::c_int) -> std::io::Result<()>;
@@ -55,7 +56,6 @@ pub struct ChildEnv {
 pub enum ChildStdio {
     Null,
     Inherit,
-    // TODO: Log, Pipe, etc.
 }
 
 #[derive(Debug, Clone)]
@@ -99,37 +99,19 @@ pub struct PtyChild {
     pub child: Child,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ChildError {
-    #[error("empty argv")]
-    EmptyArgv,
-
-    #[error("empty program name")]
-    EmptyProgram,
-
-    #[error("empty shell command")]
-    EmptyShellCommand,
-
-    #[error("pty open failed: {0}")]
-    PtyOpen(#[from] PtyOpenError),
-
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-pub fn spawn(spec: &OsCommandSpec, opts: &ChildSpawnOptions) -> Result<Child, ChildError> {
+pub fn spawn(spec: &OsCommandSpec, opts: &ChildSpawnOptions) -> anyhow::Result<Child> {
     let mut cmd = make_command(spec)?;
     apply(&mut cmd, &opts.env, opts.cwd.as_ref());
     cmd.stdin(stdio(&opts.stdin));
     cmd.stdout(stdio(&opts.stdout));
     cmd.stderr(stdio(&opts.stderr));
-    Ok(cmd.spawn()?)
+    cmd.spawn().context("spawning the child process")
 }
 
 pub fn spawn_pty_attached(
     spec: &OsCommandSpec,
     opts: &PtyChildSpawnOptions<'_>,
-) -> Result<PtyChild, ChildError> {
+) -> anyhow::Result<PtyChild> {
     let pair = open_pty_pair()?;
     if let Some(ws) = opts.window_size {
         set_winsize(&pair.slave, ws)?;
@@ -153,21 +135,21 @@ pub fn spawn_pty_attached(
         cmd.pre_exec(move || switch_to_ctty(slave_raw_fd));
     }
 
-    let child = cmd.spawn()?;
+    let child = cmd.spawn().context("spawning the pty child process")?;
     Ok(PtyChild {
         pty_master: pair.master,
         child,
     })
 }
 
-fn make_command(spec: &OsCommandSpec) -> Result<Command, ChildError> {
+fn make_command(spec: &OsCommandSpec) -> anyhow::Result<Command> {
     match spec {
         OsCommandSpec::Exec { argv } => {
             let Some(program) = argv.first() else {
-                return Err(ChildError::EmptyArgv);
+                bail!("empty argv");
             };
             if program.is_empty() {
-                return Err(ChildError::EmptyProgram);
+                bail!("empty program name");
             }
             let mut cmd = Command::new(program);
             cmd.args(&argv[1..]);
@@ -175,7 +157,7 @@ fn make_command(spec: &OsCommandSpec) -> Result<Command, ChildError> {
         }
         OsCommandSpec::Shell { command } => {
             if command.is_empty() {
-                return Err(ChildError::EmptyShellCommand);
+                bail!("empty shell command");
             }
             let mut cmd = Command::new("/bin/sh");
             cmd.arg("-c");

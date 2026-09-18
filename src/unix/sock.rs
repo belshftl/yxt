@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
+use anyhow::{Context as _, bail};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixDatagram;
@@ -15,53 +16,6 @@ const MAX_UNIX_SOCKET_PATH_BYTES: usize = 91;
 /// glibc's `BUFSIZ`, same as the read buffers; control messages are far shorter than this.
 pub const MAX_DATAGRAM_BYTES: usize = 8192;
 
-#[derive(Debug, thiserror::Error)]
-pub enum ControlSockError {
-    #[cfg(not(target_os = "macos"))]
-    #[error("XDG_RUNTIME_DIR is not set; pass `--sock` explicitly")]
-    NoRuntimeDir,
-
-    #[cfg(target_os = "macos")]
-    #[error("neither TMPDIR nor XDG_RUNTIME_DIR are set; pass `--sock` explicitly")]
-    NoRuntimeDir,
-
-    #[error("command {0:?} has no basename")]
-    CommandHasNoBasename(std::ffi::OsString),
-
-    #[error("socket path '{0}' is too long (max {MAX_UNIX_SOCKET_PATH_BYTES} bytes)")]
-    PathTooLong(PathBuf),
-
-    #[error("failed to create socket directory '{path}': {source}")]
-    CreateDir {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to remove stale socket '{path}': {source}")]
-    RemoveStale {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to bind socket '{path}': {source}")]
-    Bind {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to configure socket: {0}")]
-    Configure(#[source] std::io::Error),
-
-    #[error("failed to receive socket datagram: {0}")]
-    Recv(#[source] std::io::Error),
-
-    #[error("socket datagram is not valid UTF-8: {0}")]
-    BadUtf8(#[source] std::str::Utf8Error),
-}
-
 pub struct ControlSock {
     path: PathBuf,
     socket: UnixDatagram,
@@ -69,35 +23,31 @@ pub struct ControlSock {
 }
 
 impl ControlSock {
-    pub fn bind(path: &Path, max_datagram_size: usize) -> Result<Self, ControlSockError> {
+    pub fn bind(path: &Path, max_datagram_size: usize) -> anyhow::Result<Self> {
         let len = path.as_os_str().as_bytes().len();
         if len > MAX_UNIX_SOCKET_PATH_BYTES {
-            return Err(ControlSockError::PathTooLong(path.to_owned()));
+            bail!(
+                "socket path '{}' is {len} bytes, over the {MAX_UNIX_SOCKET_PATH_BYTES} byte limit",
+                path.display(),
+            );
         }
 
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| ControlSockError::CreateDir {
-                path: parent.to_owned(),
-                source,
-            })?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating socket directory '{}'", parent.display()))?;
         }
 
         if let Err(e) = std::fs::remove_file(path)
             && e.kind() != std::io::ErrorKind::NotFound
         {
-            return Err(ControlSockError::RemoveStale {
-                path: path.to_owned(),
-                source: e,
-            });
+            return Err(e).with_context(|| format!("removing stale socket '{}'", path.display()));
         }
 
-        let socket = UnixDatagram::bind(path).map_err(|source| ControlSockError::Bind {
-            path: path.to_owned(),
-            source,
-        })?;
+        let socket = UnixDatagram::bind(path)
+            .with_context(|| format!("binding socket '{}'", path.display()))?;
         socket
             .set_nonblocking(true)
-            .map_err(ControlSockError::Configure)?;
+            .context("making the control socket nonblocking")?;
 
         Ok(Self {
             path: path.to_owned(),
@@ -106,7 +56,7 @@ impl ControlSock {
         })
     }
 
-    pub fn recv(&self) -> Result<Option<Vec<u8>>, ControlSockError> {
+    pub fn recv(&self) -> anyhow::Result<Option<Vec<u8>>> {
         let mut buf = vec![0u8; self.max_datagram_size];
         match self.socket.recv(&mut buf) {
             Ok(n) => {
@@ -121,7 +71,7 @@ impl ControlSock {
             {
                 Ok(None)
             }
-            Err(e) => Err(ControlSockError::Recv(e)),
+            Err(e) => Err(e).context("receiving a control socket datagram"),
         }
     }
 }
@@ -145,18 +95,19 @@ impl AsRawFd for ControlSock {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn default_sock_path(prog_name: &str) -> Result<PathBuf, ControlSockError> {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or(ControlSockError::NoRuntimeDir)?;
+pub fn default_sock_path(prog_name: &str) -> anyhow::Result<PathBuf> {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .context("XDG_RUNTIME_DIR is not set; pass `--sock` explicitly")?;
     Ok(PathBuf::from(dir)
         .join(prog_name)
         .join(format!("{}.sock", std::process::id())))
 }
 
 #[cfg(target_os = "macos")]
-pub fn default_sock_path(prog_name: &str) -> Result<PathBuf, ControlSockError> {
+pub fn default_sock_path(prog_name: &str) -> anyhow::Result<PathBuf> {
     let dir = std::env::var_os("TMPDIR")
         .or_else(|| std::env::var_os("XDG_RUNTIME_DIR"))
-        .ok_or(ControlSockError::NoRuntimeDir)?;
+        .context("neither TMPDIR nor XDG_RUNTIME_DIR are set; pass `--sock` explicitly")?;
     Ok(PathBuf::from(dir)
         .join(prog_name)
         .join(format!("{}.sock", std::process::id())))

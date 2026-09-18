@@ -7,8 +7,6 @@ use crate::term::negotiate::PUSH_OVERHEAD_BYTES;
 
 #[derive(Debug, Clone)]
 pub struct Options {
-    pub log_file: String,
-
     /// Asks the terminal to encode backspace as DEL rather than BS (DECBKM reset), which is the
     /// only thing under legacy that makes ctrl+h distinguishable from backspace. Off by default
     /// because treating BS as ctrl+h on a terminal that didn't agree to encode backspace as DEL
@@ -33,8 +31,6 @@ impl Default for Options {
     /// a sequence almost never arrives split up.
     fn default() -> Self {
         Self {
-            log_file: String::new(),
-
             force_backspace_sends_del: false,
             esc_byte_is_partial_esc: false,
 
@@ -74,14 +70,13 @@ impl Options {
         }
     }
 
-    pub fn set(&mut self, name: String, value: Literal, span: Span) -> Result<(), ConfigError> {
+    pub fn set(&mut self, name: &str, value: Literal, span: Span) -> Result<(), ConfigError> {
         // currently, the only options with a legal minimum value are the ones where it's derivable
         // rather than just arbitrarily chosen to guard from bad input;
         // `terminal_write_timeout_ms = 0` is pathological but there isn't really a lower bound that
         // can be derived from some non-arbitrary rule/constant; 1 is the only other kind of
         // defensible one
-        match name.as_str() {
-            "log_file" => self.log_file = expect_string(value, span)?,
+        match name {
             "force_backspace_sends_del" => {
                 self.force_backspace_sends_del = expect_bool(value, span)?;
             }
@@ -123,25 +118,14 @@ impl Options {
             }
             _ => {
                 return Err(ConfigError {
-                    kind: ErrorKind::UnknownOption { name },
+                    kind: ErrorKind::UnknownOption {
+                        name: name.to_owned(),
+                    },
                     span,
                 });
             }
         }
         Ok(())
-    }
-}
-
-fn expect_string(value: Literal, span: Span) -> Result<String, ConfigError> {
-    match value {
-        Literal::String(v) => Ok(v),
-        other => Err(ConfigError {
-            kind: ErrorKind::WrongLiteralType {
-                expected: LiteralKind::String,
-                got: LiteralKind::of(&other),
-            },
-            span,
-        }),
     }
 }
 
@@ -159,16 +143,20 @@ fn expect_bool(value: Literal, span: Span) -> Result<bool, ConfigError> {
 }
 
 fn expect_usize_above(
-    name: String,
+    name: &str,
     value: Literal,
     span: Span,
     min: usize,
     why: &'static str,
 ) -> Result<usize, ConfigError> {
-    let parsed = expect_non_negative::<usize>(name.clone(), value, span)?;
+    let parsed = expect_non_negative::<usize>(name, value, span)?;
     if parsed <= min {
         return Err(ConfigError {
-            kind: ErrorKind::OptionTooSmall { name, min, why },
+            kind: ErrorKind::OptionTooSmall {
+                name: name.to_owned(),
+                min,
+                why,
+            },
             span,
         });
     }
@@ -176,14 +164,14 @@ fn expect_usize_above(
 }
 
 fn expect_non_negative<T: Copy + TryFrom<i32>>(
-    name: String,
+    name: &str,
     value: Literal,
     span: Span,
 ) -> Result<T, ConfigError> {
     match value {
         Literal::Int(v) => T::try_from(v).map_err(|_| ConfigError {
             kind: ErrorKind::BadOptionValue {
-                name,
+                name: name.to_owned(),
                 desc: "value must be non-negative",
             },
             span,

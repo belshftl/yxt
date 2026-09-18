@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FileId(pub(crate) usize);
+pub struct FileId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineCtx {

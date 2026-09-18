@@ -297,7 +297,7 @@ impl Default for ProtocolRequest {
 // ================================================================================================
 // groups
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GroupId(pub(crate) usize);
+pub struct GroupId(pub usize);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DefineGroupError {

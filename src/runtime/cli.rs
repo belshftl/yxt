@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
+use anyhow::{Context as _, bail};
 use lexopt::prelude::*;
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
@@ -21,7 +22,7 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub fn parse() -> Result<Self, lexopt::Error> {
+    pub fn parse() -> anyhow::Result<Self> {
         let mut parser = lexopt::Parser::from_env();
         let mut cli = Self {
             config: None,
@@ -52,7 +53,7 @@ impl Cli {
                     cli.command.extend(parser.raw_args()?);
                     break;
                 }
-                _ => return Err(arg.unexpected()),
+                _ => return Err(arg.unexpected().into()),
             }
         }
 
@@ -60,58 +61,38 @@ impl Cli {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ConfigPathError {
-    #[error("no command was provided")]
-    NoCommand,
-
-    #[error("command {0:?} has no basename")]
-    CommandHasNoBasename(OsString),
-
-    #[error(
-        "no config path was provided (implicit config lookup would use '{implicit_path}' if enabled)"
-    )]
-    NoConfigPath { implicit_path: PathBuf },
-
-    #[error(
-        "refusing to use implicit config '{implicit_path}' under UID 0 / setuid / setgid; pass --config explicitly"
-    )]
-    ImplicitConfigRefused { implicit_path: PathBuf },
-
-    #[error("no config path was provided and implicit config '{implicit_path}' does not exist")]
-    MissingImplicitConfig { implicit_path: PathBuf },
-}
-
-pub fn config_path<'a>(
-    cli: &'a Cli,
-    implicit_config_dir: &Path,
-) -> Result<Cow<'a, Path>, ConfigPathError> {
+pub fn config_path<'a>(cli: &'a Cli, implicit_config_dir: &Path) -> anyhow::Result<Cow<'a, Path>> {
     if let Some(path) = &cli.config {
         return Ok(Cow::Borrowed(path));
     }
 
     if cli.command.is_empty() {
-        return Err(ConfigPathError::NoCommand);
+        bail!("no command was provided");
     }
     let basename = command_basename(&cli.command[0])?;
     let implicit_path = implicit_config_dir.join(basename).with_extension("conf");
 
+    let shown = implicit_path.display();
     if cli.no_implicit_config {
-        Err(ConfigPathError::NoConfigPath { implicit_path })
+        bail!(
+            "no config path was provided (implicit config lookup would use '{shown}' if enabled)"
+        )
     } else if refuse_implicit_config() {
-        Err(ConfigPathError::ImplicitConfigRefused { implicit_path })
+        bail!(
+            "refusing to use implicit config '{shown}' under UID 0 / setuid / setgid; pass --config explicitly"
+        )
     } else if !implicit_path.exists() {
-        Err(ConfigPathError::MissingImplicitConfig { implicit_path })
-    } else {
-        Ok(Cow::Owned(implicit_path))
+        bail!("no config path was provided and implicit config '{shown}' does not exist")
     }
+
+    Ok(Cow::Owned(implicit_path))
 }
 
-fn command_basename(command: &OsStr) -> Result<&OsStr, ConfigPathError> {
+fn command_basename(command: &OsStr) -> anyhow::Result<&OsStr> {
     Path::new(command)
         .file_name()
         .filter(|name| !name.is_empty())
-        .ok_or_else(|| ConfigPathError::CommandHasNoBasename(command.to_owned()))
+        .with_context(|| format!("command '{}' has no basename", command.display()))
 }
 
 fn refuse_implicit_config() -> bool {

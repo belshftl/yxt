@@ -207,6 +207,9 @@ add '@protocol want {needs}' before any options/mappings"
     #[error("duplicate modifier '{name}'")]
     DuplicateModifier { name: String },
 
+    #[error("duplicate modifier set alternative")]
+    DuplicateModsAlt,
+
     #[error("expected concrete modifier set, not pattern")]
     NeedNonPatModSet,
 
@@ -297,7 +300,7 @@ impl ConfigBuilder {
                 rhs,
                 span,
             } => self.apply_mapping(attrs, lhs, op, rhs, span),
-            Stmt::OptionAssignment { name, val, span } => self.options.set(name, val, span),
+            Stmt::OptionAssignment { name, val, span } => self.options.set(&name, val, span),
         }
     }
 
@@ -1052,8 +1055,18 @@ fn lower_mod_alts(expr: Expr) -> Result<Mods, ConfigError> {
                 rhs,
                 ..
             } => {
+                // the rhs is the latter duplicate, i.e. the one worth pointing at
+                let dup_span = rhs.span();
                 let lhs = lower_mod_mask(*lhs)?;
                 let rhs = lower_mod_mask(*rhs)?;
+                if let Some(name) = shared_mod_name(lhs, rhs) {
+                    return Err(ConfigError {
+                        kind: ErrorKind::DuplicateModifier {
+                            name: name.to_owned(),
+                        },
+                        span: dup_span,
+                    });
+                }
                 Ok(lhs | rhs)
             }
             Expr::Infix {
@@ -1104,8 +1117,7 @@ fn lower_mods_pattern(
                 // catchable modifier under the current protocol"
                 return Ok((ModsPattern::Any, None));
             }
-            let mut alts = lower_mod_pat_alts(expr)?;
-            dedup_mod_alts(&mut alts);
+            let alts = lower_mod_pat_alts(expr)?;
             let need = alts
                 .iter()
                 .fold(None, |need, alt| ProtocolNeed::max(need, alt.need));
@@ -1130,8 +1142,23 @@ fn lower_mod_pat_alts(expr: Expr) -> Result<Vec<ModsAlt>, ConfigError> {
             rhs,
             ..
         } => {
+            let dup_span = rhs.span();
             let lhs = lower_mod_pat_alts(*lhs)?;
             let rhs = lower_mod_pat_alts(*rhs)?;
+
+            // `&` distributes over `||`, so every alternative on the left is paired with every
+            // one on the right; a bit shared between the two unions is therefore a bit shared by
+            // some pair, and vice versa
+            let union = |alts: &[ModsAlt]| alts.iter().fold(Mods::EMPTY, |acc, alt| acc | alt.mods);
+            if let Some(name) = shared_mod_name(union(&lhs), union(&rhs)) {
+                return Err(ConfigError {
+                    kind: ErrorKind::DuplicateModifier {
+                        name: name.to_owned(),
+                    },
+                    span: dup_span,
+                });
+            }
+
             let mut out = Vec::new();
             for l in &lhs {
                 for r in &rhs {
@@ -1149,8 +1176,20 @@ fn lower_mod_pat_alts(expr: Expr) -> Result<Vec<ModsAlt>, ConfigError> {
             rhs,
             ..
         } => {
+            // as with `&`, the rhs is the later one in source order
+            let dup_span = rhs.span();
             let mut out = lower_mod_pat_alts(*lhs)?;
-            out.extend(lower_mod_pat_alts(*rhs)?);
+            let rhs = lower_mod_pat_alts(*rhs)?;
+
+            for alt in rhs {
+                if out.iter().any(|kept| kept.mods == alt.mods) {
+                    return Err(ConfigError {
+                        kind: ErrorKind::DuplicateModsAlt,
+                        span: dup_span,
+                    });
+                }
+                out.push(alt);
+            }
             Ok(out)
         }
         Expr::Ident { name, span } => {
@@ -1167,15 +1206,33 @@ fn lower_mod_pat_alts(expr: Expr) -> Result<Vec<ModsAlt>, ConfigError> {
     }
 }
 
+/// The named modifiers, in the order a duplicate gets reported in.
+const MOD_NAMES: &[(&str, Mods)] = &[
+    ("shift", Mods::SHIFT),
+    ("alt", Mods::ALT),
+    ("ctrl", Mods::CTRL),
+    ("super", Mods::SUPER),
+    ("hyper", Mods::HYPER),
+    ("meta", Mods::META),
+];
+
+/// The name of a modifier `a` and `b` have in common, if any.
+///
+/// Doesn't include `none`: `none & none` overlaps in no bit, so there is nothing to report.
+fn shared_mod_name(a: Mods, b: Mods) -> Option<&'static str> {
+    let shared = a & b;
+    MOD_NAMES
+        .iter()
+        .find(|(_, m)| (shared & *m) != Mods::EMPTY)
+        .map(|(name, _)| *name)
+}
+
 fn lower_mod_name(name: &str, span: Span, pattern: bool) -> Result<Mods, ConfigError> {
+    if let Some((_, mods)) = MOD_NAMES.iter().find(|(n, _)| *n == name) {
+        return Ok(*mods);
+    }
     match name {
         "none" => Ok(Mods::EMPTY),
-        "shift" => Ok(Mods::SHIFT),
-        "alt" => Ok(Mods::ALT),
-        "ctrl" => Ok(Mods::CTRL),
-        "super" => Ok(Mods::SUPER),
-        "hyper" => Ok(Mods::HYPER),
-        "meta" => Ok(Mods::META),
         "any" => {
             if pattern {
                 Err(ConfigError {
@@ -1427,16 +1484,6 @@ fn unparen(mut expr: Expr) -> Expr {
         expr = *inner;
     }
     expr
-}
-
-fn dedup_mod_alts(values: &mut Vec<ModsAlt>) {
-    let mut out: Vec<ModsAlt> = Vec::new();
-    for value in values.drain(..) {
-        if !out.iter().any(|kept| kept.mods == value.mods) {
-            out.push(value);
-        }
-    }
-    *values = out;
 }
 
 #[cfg(test)]

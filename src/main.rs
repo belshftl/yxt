@@ -27,6 +27,7 @@ mod runtime;
 mod term;
 mod unix;
 
+use anyhow::{Context as _, anyhow, bail};
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::io::IsTerminal;
@@ -118,70 +119,6 @@ const SENSITIVE_CHILD_BASENAMES: &[&str] = &[
     "zfs",
 ];
 
-#[derive(Debug, thiserror::Error)]
-pub enum AppError {
-    #[error(transparent)]
-    Pledge(#[from] crate::unix::pledge::PledgeError),
-
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-
-    #[error(transparent)]
-    Cli(#[from] lexopt::Error),
-
-    #[error(transparent)]
-    ConfigPath(#[from] crate::runtime::cli::ConfigPathError),
-
-    #[error(transparent)]
-    ConfigLoad(#[from] crate::config::loader::ConfigLoadError),
-
-    #[error(
-        "\
-refusing to run for sensitive child '{0}'
-this program internally tracks/routes terminal input, which you probably don't want here
-run with --allow-sensitive-child to run anyways"
-    )]
-    SensitiveChild(String),
-
-    #[error("stdout must be a terminal")]
-    NotATerminal,
-
-    #[error("stdout must be open read-write, since it's the terminal input is read from")]
-    TerminalNotReadWrite,
-
-    #[error("stdin is a terminal but not the same one as stdout")]
-    NotOneTerminal,
-
-    #[error(transparent)]
-    ControlSock(#[from] crate::unix::sock::ControlSockError),
-
-    #[error(transparent)]
-    Child(#[from] crate::unix::child::ChildError),
-
-    #[error(transparent)]
-    PtyOpen(#[from] crate::unix::tty::PtyOpenError),
-
-    #[error(transparent)]
-    Signal(#[from] crate::unix::signal::SignalError),
-
-    #[error(transparent)]
-    Service(#[from] crate::runtime::children::ServiceError),
-
-    #[error(transparent)]
-    Route(#[from] crate::runtime::router::RouteError),
-
-    #[error(transparent)]
-    Negotiate(#[from] crate::term::negotiate::NegotiateError),
-
-    #[error("timed out writing the keyboard protocol setup to the terminal")]
-    NegotiateWriteTimeout,
-
-    #[error(
-        "PTY input queue of {0} bytes is full; child is not consuming its input or mapping expanded too much, bailing out"
-    )]
-    MasterQueueFull(usize),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FdKey {
     TermIn,
@@ -200,13 +137,13 @@ fn main() {
     match run(argv0.as_ref()) {
         Ok(rv) => std::process::exit(rv),
         Err(e) => {
-            eprintln!("{argv0}: {e}");
+            eprintln!("{argv0}: {e:#}");
             std::process::exit(1);
         }
     }
 }
 
-fn run(argv0: &str) -> Result<i32, AppError> {
+fn run(argv0: &str) -> anyhow::Result<i32> {
     // --------------------------------------------------------------
 
     fn apply_effect(
@@ -215,13 +152,13 @@ fn run(argv0: &str) -> Result<i32, AppError> {
         master_queue: &mut ByteQueue,
         actions: &mut ActionManager,
         mappings_enabled: &mut bool,
-    ) -> Result<(), AppError> {
+    ) -> anyhow::Result<()> {
         match effect {
             RouteEffect::Token(tok) => {
                 if let Some(bytes) = encoder.encode_token(tok) {
                     master_queue
                         .push(&bytes)
-                        .map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?;
+                        .map_err(|_| master_queue_full(master_queue))?;
                 }
             }
             RouteEffect::Action(act) => match act {
@@ -239,7 +176,7 @@ fn run(argv0: &str) -> Result<i32, AppError> {
         master_queue: &mut ByteQueue,
         actions: &mut ActionManager,
         mappings_enabled: &mut bool,
-    ) -> Result<(), AppError> {
+    ) -> anyhow::Result<()> {
         for item in decoded {
             match item {
                 Decoded::Token(tok) => {
@@ -249,7 +186,7 @@ fn run(argv0: &str) -> Result<i32, AppError> {
                     {
                         master_queue
                             .push(&bytes)
-                            .map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?;
+                            .map_err(|_| master_queue_full(master_queue))?;
                     }
                     for effect in r.effects {
                         apply_effect(&effect, encoder, master_queue, actions, mappings_enabled)?;
@@ -257,10 +194,18 @@ fn run(argv0: &str) -> Result<i32, AppError> {
                 }
                 Decoded::Unknown(bytes) => master_queue
                     .push(bytes)
-                    .map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?,
+                    .map_err(|_| master_queue_full(master_queue))?,
             }
         }
         Ok(())
+    }
+
+    fn master_queue_full(queue: &ByteQueue) -> anyhow::Error {
+        anyhow!(
+            "pty input queue of {} bytes is full; the child is not consuming its input, or a \
+             mapping expanded too much",
+            queue.capacity(),
+        )
     }
 
     fn begin_shutdown(
@@ -271,7 +216,7 @@ fn run(argv0: &str) -> Result<i32, AppError> {
         child_kill_deadline: &mut Option<Instant>,
         grace: Duration,
         now: Instant,
-    ) -> Result<(), AppError> {
+    ) -> anyhow::Result<()> {
         if *stopping {
             return Ok(());
         }
@@ -358,7 +303,11 @@ try '--help' for more info
         && let Some(child_name) = cli.command[0].to_str()
         && SENSITIVE_CHILD_BASENAMES.contains(&child_name)
     {
-        return Err(AppError::SensitiveChild(child_name.to_owned()));
+        bail!(
+            "refusing to run for sensitive child '{child_name}'
+this program internally tracks/routes terminal input, which you probably don't want here
+run with --allow-sensitive-child to run anyways"
+        );
     }
 
     let terminal_write_timeout = Duration::from_millis(config.options.terminal_write_timeout_ms);
@@ -373,14 +322,14 @@ try '--help' for more info
     // no need to check if they're open, as if an fd 0-2 is not open before main() runs the runtime
     // opens /dev/null into it
     if !stdout.is_terminal() {
-        return Err(AppError::NotATerminal);
+        bail!("stdout must be a terminal");
     }
     if !is_rdwr(&stdout)? {
-        return Err(AppError::TerminalNotReadWrite);
+        bail!("stdout must be open read-write, since it's the terminal input is read from");
     }
     let stdin_is_terminal = stdin.is_terminal();
     if stdin_is_terminal && !same_terminal(&stdin, &stdout)? {
-        return Err(AppError::NotOneTerminal);
+        bail!("stdin is a terminal but not the same one as stdout");
     }
 
     let sock_path = cli.sock.map_or_else(|| default_sock_path("yxt"), Ok)?;
@@ -441,7 +390,7 @@ try '--help' for more info
             Instant::now() + terminal_write_timeout,
         )?
     {
-        return Err(AppError::NegotiateWriteTimeout);
+        bail!("timed out writing the keyboard protocol setup to the terminal");
     }
 
     let mut actions = ActionManager::new(child_opts.clone());
@@ -474,7 +423,7 @@ try '--help' for more info
             && let Err(e) = signals.register(*sig)
             && !matches!(e, SignalError::AlreadyRegistered(_))
         {
-            return Err(AppError::Signal(e));
+            return Err(e).with_context(|| format!("registering signal {sig}"));
         }
     }
 
@@ -577,7 +526,7 @@ try '--help' for more info
             match select(&fds, timeout) {
                 Ok(ready) => ready,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => ReadyFds::empty(),
-                Err(e) => return Err(AppError::Io(e)),
+                Err(e) => return Err(e).context("waiting for fd readiness"),
             }
         };
 
@@ -639,7 +588,7 @@ try '--help' for more info
                         .expect("proxy should never output more than the headroom reserved for it");
                     master_queue
                         .push(&to_child)
-                        .map_err(|_| AppError::MasterQueueFull(master_queue.capacity()))?;
+                        .map_err(|_| master_queue_full(&master_queue))?;
 
                     if outcome.upstream_changed {
                         decoder.set_mode(proxy.upstream_mode());

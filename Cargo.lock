@@ -484,6 +484,7 @@ dependencies = [
 name = "yxt"
 version = "0.1.0-beta"
 dependencies = [
+ "anyhow",
  "lexopt",
  "libc",
  "signal-hook",

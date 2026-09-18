@@ -9,6 +9,7 @@ keywords = ["cli", "keymap", "kitty", "terminal"]
 categories = ["command-line-utilities"]
 
 [dependencies]
+anyhow = "1"
 lexopt = "0.3"
 libc = "0.2"
 signal-hook = "0.4"

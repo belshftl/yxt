@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
+use anyhow::{Context as _, bail};
 use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
 use crate::model::{CommandSpec, Service};
-use crate::unix::child::{ChildError, ChildSpawnOptions, OsCommandSpec, spawn};
+use crate::unix::child::{ChildSpawnOptions, OsCommandSpec, spawn};
 
 /// One scheduler tick at the traditional `HZ=100`. Only reached at service spawn failure, which
 /// runs before the event loop and so has no `select` to wait on instead and must poll.
@@ -24,7 +25,7 @@ impl ActionManager {
         }
     }
 
-    pub fn spawn(&mut self, command: &CommandSpec) -> Result<(), ChildError> {
+    pub fn spawn(&mut self, command: &CommandSpec) -> anyhow::Result<()> {
         let spec = OsCommandSpec::from_model(command);
         let child = spawn(&spec, &self.options)?;
         self.children.push(child);
@@ -133,83 +134,6 @@ fn signal_child(child: &Child, signal: libc::c_int) -> std::io::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ServiceError {
-    #[error("failed to spawn service '{name}': {source}")]
-    Spawn {
-        name: String,
-        #[source]
-        source: ChildError,
-        cleanup: Vec<ServiceCleanupError>,
-    },
-
-    #[error("service '{name}' exited unexpectedly with status {status}")]
-    UnexpectedExit {
-        name: String,
-        status: std::process::ExitStatus,
-    },
-
-    #[error("failed to check service '{name}': {source}")]
-    Check {
-        name: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to terminate service '{name}': {source}")]
-    Terminate {
-        name: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to kill service '{name}': {source}")]
-    Kill {
-        name: String,
-        #[source]
-        source: std::io::Error,
-    },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ServiceCleanupError {
-    #[error("failed to check service '{name}': {source}")]
-    Check {
-        name: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to terminate service '{name}': {source}")]
-    Terminate {
-        name: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to kill service '{name}': {source}")]
-    Kill {
-        name: String,
-        #[source]
-        source: std::io::Error,
-    },
-}
-
-impl ServiceCleanupError {
-    pub fn try_from(err: ServiceError) -> Option<ServiceCleanupError> {
-        match err {
-            ServiceError::Check { name, source } => {
-                Some(ServiceCleanupError::Check { name, source })
-            }
-            ServiceError::Terminate { name, source } => {
-                Some(ServiceCleanupError::Terminate { name, source })
-            }
-            ServiceError::Kill { name, source } => Some(ServiceCleanupError::Kill { name, source }),
-            _ => None,
-        }
-    }
-}
-
 pub struct ServiceManager {
     services: Vec<ServiceChild>,
     shutdown_grace: Duration,
@@ -221,7 +145,7 @@ impl ServiceManager {
         services: &Vec<Service>,
         spawn_options: &ChildSpawnOptions,
         shutdown_grace: Duration,
-    ) -> Result<Self, ServiceError> {
+    ) -> anyhow::Result<Self> {
         let mut manager = Self {
             services: Vec::new(),
             shutdown_grace,
@@ -243,16 +167,22 @@ impl ServiceManager {
 
                     for sv in &mut manager.services {
                         let name = sv.name().to_owned();
-                        if let Err(source) = sv.begin_terminate(deadline) {
-                            errors.push(ServiceCleanupError::Terminate { name, source });
+                        if let Err(e) = sv.begin_terminate(deadline) {
+                            errors.push(
+                                anyhow::Error::from(e)
+                                    .context(format!("terminating service '{name}'")),
+                            );
                         }
                     }
 
                     while !manager.services.is_empty() && Instant::now() < deadline {
                         for sv in &mut manager.services {
                             let name = sv.name().to_owned();
-                            if let Err(source) = sv.try_wait() {
-                                errors.push(ServiceCleanupError::Check { name, source });
+                            if let Err(e) = sv.try_wait() {
+                                errors.push(
+                                    anyhow::Error::from(e)
+                                        .context(format!("checking service '{name}'")),
+                                );
                             }
                         }
                         manager.services.retain(|sv| !sv.is_done());
@@ -266,17 +196,21 @@ impl ServiceManager {
                             continue;
                         }
                         let name = service.name().to_owned();
-                        if let Err(source) = service.kill_now() {
-                            errors.push(ServiceCleanupError::Kill { name, source });
+                        if let Err(e) = service.kill_now() {
+                            errors.push(
+                                anyhow::Error::from(e).context(format!("killing service '{name}'")),
+                            );
                         }
                     }
                     manager.services.clear();
 
-                    return Err(ServiceError::Spawn {
-                        name: sv.name.clone(),
-                        source,
-                        cleanup: errors,
-                    });
+                    // the spawn failure is what went wrong; anything that went wrong while
+                    // unwinding the already started services gets tagged on
+                    let mut err = source.context(format!("starting service '{}'", sv.name));
+                    for cleanup in errors {
+                        err = err.context(format!("{cleanup:#}"));
+                    }
+                    return Err(err);
                 }
             }
         }
@@ -284,23 +218,22 @@ impl ServiceManager {
         Ok(manager)
     }
 
-    pub fn check_exits(&mut self) -> Result<(), ServiceError> {
+    pub fn check_exits(&mut self) -> anyhow::Result<()> {
         for sv in &mut self.services {
             let name = sv.name().to_owned();
             if !self.shutting_down
-                && let Some(status) = sv.try_wait().map_err(|source| ServiceError::Check {
-                    name: name.clone(),
-                    source,
-                })?
+                && let Some(status) = sv
+                    .try_wait()
+                    .with_context(|| format!("checking service '{name}'"))?
             {
-                return Err(ServiceError::UnexpectedExit { name, status });
+                bail!("service '{name}' exited unexpectedly with status {status}");
             }
         }
         self.services.retain(|sv| !sv.is_done());
         Ok(())
     }
 
-    pub fn begin_shutdown(&mut self, now: Instant) -> Result<(), ServiceError> {
+    pub fn begin_shutdown(&mut self, now: Instant) -> anyhow::Result<()> {
         if self.shutting_down {
             return Ok(());
         }
@@ -309,12 +242,12 @@ impl ServiceManager {
         for sv in &mut self.services {
             let name = sv.name().to_owned();
             sv.begin_terminate(deadline)
-                .map_err(|source| ServiceError::Terminate { name, source })?;
+                .with_context(|| format!("terminating service '{name}'"))?;
         }
         Ok(())
     }
 
-    pub fn poll_shutdown(&mut self, now: Instant) -> Result<(), ServiceError> {
+    pub fn poll_shutdown(&mut self, now: Instant) -> anyhow::Result<()> {
         if self.is_shutdown_complete() {
             return Ok(());
         }
@@ -328,10 +261,8 @@ impl ServiceManager {
                 continue;
             }
 
-            sv.kill_now().map_err(|source| ServiceError::Kill {
-                name: sv.name().to_owned(),
-                source,
-            })?;
+            sv.kill_now()
+                .with_context(|| format!("killing service '{}'", sv.name()))?;
         }
         self.check_exits()?;
         Ok(())

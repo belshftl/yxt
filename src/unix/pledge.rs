@@ -6,6 +6,8 @@ pub enum PledgeError {
     #[error("pledge is unsupported on this platform")]
     Unsupported,
 
+    // only reachable on the platform that has `pledge` in the first place
+    #[cfg(target_os = "openbsd")]
     #[error("pledge promises/execpromises string had a NUL byte inside it")]
     InteriorNul,
 

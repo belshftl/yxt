@@ -1,6 +1,137 @@
+# terminal notes
+
+**This is not user documentation.** If you're not a developer, you probably don't need to read any of this.
+
+Implementation notes on terminal behavior, aimed at anyone working on yxt or writing something similar. Aims to cover either new firsthand findings or info that is hard to come by, rather than things already covered by ctlseqs, the kitty protocol spec, or other general terminal docs.
+
+Conventions:
+- **Everything has been empirically derived unless it says otherwise.** A statement presented as fact that has been inferred, derived from a spec rather than observed, or otherwise not grounded in a real observation says so in place.
+- Terminals are cited by commit if their source code is referenced.
+- A section suffixed "and us" covers yxt's own exposure to the preceding behavior, rather than the behavior itself.
+
+Stylistic writing/notation conventions for those editing this doc:
+- Don't manually linebreak lines. You're expected to enable linewrap in your editor; this does break the really long kitty-implementations table, but it's not worth changing the style of the rest of the doc over one table, and at the end of the day this will be put through a markdown renderer either way.
+- Modifiers (shift/alt/ctrl/meta/super/hyper), including latch modifiers (capslock/numlock/scrolllock), are single words with regular capitalization rules, not proper nouns.
+- Descriptions of pressed keys don't get special capitalization, and the description of inputting a capital letter is written as "shift+a" rather than "A". This keeps it unambiguous as to whether "if C is pressed ..." means lowercase or uppercase, as such a sentence won't be encountered in the first place.
+- Hex digits are always lowercase; `0xff`, not `0xFF`. On paper, this includes hex literal signedness/size specifiers too, like `0xabcdefull` or `0xabcdefusize`, but this doc has currently no such hex literals.
+- If what ASCII char a byte corresponds to is relevant and should be mentioned, write it like `0x08`/BS for nonprintable chars or `0x61`/`a` for printable chars.
+
+Table of contents:
+- [querying terminals](#querying-terminals)
+- [legacy encoding](#legacy-encoding)
+- [dec modes](#dec-modes)
+- [xterm `modifyOtherKeys`](#xterm-modifyotherkeys)
+- [kitty keyboard protocol](#kitty-keyboard-protocol)
+
 -----
 
-## kitty implementations
+## querying terminals
+
+### DA1 as a query sentinel
+
+Every terminal tested (caveat: that's three terminals) answers `CSI c` even if it ignored the capability query that was sent alongside, making "doesn't support this" distinguishable from "hasn't answered yet", and is why `term::query` adds DA1 at the end of the batch.
+
+Replies seen, which also serve to identify them: xterm `CSI ?64;1;2;6;9;15;17;18;21;22;28 c`, xfce4-terminal `CSI ?61;1;21;22;28 c`, alacritty `CSI ?6 c` (bare VT102).
+
+### a reported mode is not a working mode
+
+alacritty tracks LNM and echoes it back: DECRQM(20) answers 2, answers 1 after `CSI 20 h`, and answers 2 again after `CSI 20 l`. Enter keeps sending `0x0d`/CR throughout. The mode gets stored and reported, and does nothing to keyboard input.
+
+This is the same kind of problem as contour advertising kitty flag 16, where what gets queried is a mode's *state*, not whether the terminal is actually acting on it. DECRPM's 1/2/3/4 still distinguish changeable from locked, and that so far held everywhere tested, but a reply of "set" or "reset" is not on its own evidence that changing it will change any behavior.
+
+The danger is not a mode that does nothing, the danger is us thinking it's currently doing something. For DECBKM, for example, if a terminal reported it as changeable and ignored `CSI ? 67 l`, it'd keep encoding backspace as `0x08`/BS, which we'd decode as ctrl+h, which would break backspace. No terminal tested does that. alacritty, which falsely reports LNM, answers 0 (mode not recognized) for DECBKM, xfce4-terminal is locked and reports that honestly, and xterm fully supports DECBKM.
+
+### collisions between commands and replies
+
+Neither of the protocols make it easy to distinguish applications' requests from the terminal's answers, in different ways.
+
+- **XTQMODKEYS** just replies with the set command. The answer to `CSI ? 4 m` is `CSI > 4 ; 2 m`, which is byte-for-byte what you would send to set the mode to 2. Nothing in the sequence says which direction it's going, only the stream it came through, which is external info.
+- **kitty** separates the reply from the commands, but not from its own query. Set/push/pop use `=`/`>`/`<`, so a reply can't be mistaken for one of them, but the query is `CSI ? u` and the reply is `CSI ? flags u`, which is the exact same private marker distinguished purely by whether any parameter is present.
+
+The general lesson for anyone designing one of these: giving the reply its own marker eliminates a whole class of bugs and costs a single character.
+
+-----
+
+## legacy encoding
+
+### disambiguating c0 collisions
+
+Five ctrl+char single-byte encodings are the exact same as that of some named key, making it ambiguous. Two of them can be made distinguishable, and which ones is an incidental emergence from what modes happen to exist rather than anything principled:
+
+| collision          | byte       | disambiguated by                          |
+| ------------------ | ---------- | ----------------------------------------- |
+| ctrl+h / backspace | `0x08`/BS  | DECBKM reset, making backspace `0x7f`/DEL |
+| ctrl+j / enter     | `0x0a`/LF  | LNM reset, keeping enter at CR alone      |
+| ctrl+i / tab       | `0x09`/HT  | nothing                                   |
+| ctrl+m / enter     | `0x0d`/CR  | nothing                                   |
+| ctrl+[ / esc       | `0x1b`/ESC | nothing                                   |
+
+The bottom three don't have any known mode that can change the encoding, and the two that do are conditional on a mode that the terminal may or may not implement, may or may not let you change, and may or may not be already in the state you want. Guessing either of these wrong is worse than not trying, so the named key has to win by default and only a positive answer from the terminal can change that.
+
+### ambiguous alt+char combos
+
+Alt is an ESC prefix in legacy, and ESC followed by any of `N O P X [ ] ^ _` starts a control (SS2, SS3, DCS, SOS, CSI, OSC, PM, APC respectively). Those eight characters therefore cannot carry alt at all: alt+[ is `0x1b`/ESC + `0x5b`/`[`, which is indistinguishable from the start of a CSI, and the decoder has no way to tell apart even in principle. The alt+[ collision was confirmed on xfce4-terminal; the rest have not, but are trivially true on a terminal that encodes alt+char as ESC followed by the char verbatim.
+
+-----
+
+## dec modes
+
+### DECBKM and how backspace is encoded
+
+Terminal answers for DECRQM(67):
+
+| terminal        | DECRPM | meaning                                             |
+| --------------- | ------ | --------------------------------------------------- |
+| xterm           | 1      | set and changeable; backspace is `0x08`/BS          |
+| xfce4-terminal  | 4      | permanently reset; backspace is already `0x7f`/DEL  |
+| alacritty       | 0      | not implemented; backspace is `0x7f`/DEL regardless |
+
+(TODO: test on more terminals)
+
+On xterm, `CSI ? 67 l` takes effect immediately (backspace changes to `0x7f`, ctrl+h stays `0x08`) and `CSI ? 67 h` changes it back. On xfce4-terminal the mode is locked, but locked to the state we happen to want here.
+
+alacritty doesn't implement DECBKM at all: it answers 0, ignores both `CSI ? 67 l` and `CSI ? 67 h`, and sends `0x7f` for backspace and `0x08` for ctrl+h throughout. This is one supporting data point for the open question in `term::negotiate::plan_backspace_del` about what non-implementing terminals send, and nowhere near enough to settle it.
+
+The transferable part is the probe rather than the values. Thanks to DECRPM's set/permanently-set distinction, "is this changeable" and "what is its value" are in the same query response: 1/2 = changeable, 3/4 = locked. [That holds for any DEC private mode](https://vt100.net/docs/vt510-rm/DECRPM.html).
+
+Currently untested: whether DECBKM is per-screen or global.
+
+### LNM and how enter is encoded
+
+LNM behavior with the terminal in raw mode:
+
+| terminal       | DECRPM(20) | enter, LNM reset | enter, LNM set      | ctrl+j    |
+| -------------- | ---------- | ---------------- | ------------------- | --------- |
+| xterm          | 2          | `0x0d`/CR        | `0x0d`/CR `0x0a`/LF | `0x0a`/LF |
+| xfce4-terminal | 4          | `0x0d`/CR        | `0x0d`/CR (locked)  | `0x0a`/LF |
+| alacritty      | 2          | `0x0d`/CR        | `0x0d`/CR           | `0x0a`/LF |
+
+(TODO: test on more terminals)
+
+Enter with LNM set sends CRLF, not just LF, so a decoder reading `0x0a` as ctrl+j emits enter followed by a spurious ctrl+j.
+
+xfce4-terminal reports LNM permanently reset, so ctrl+j is distinguishable there unconditionally, which is similar to its DECBKM answer. alacritty is the odd one; see "a reported mode is not a working mode" under "querying terminals".
+
+-----
+
+## xterm `modifyOtherKeys`
+
+Empirically derived on a fresh xterm install on Arch; `xrdb -query` came up empty, so it's either defaults or popular-distro-defaults:
+- **Shifted characters are escaped once mode 2 has been set;** after explicitly sending `CSI > 4 ; 2 m`, shift+a is `CSI 27;2;65~`, i.e. the *shifted* glyph as `code` + the shift bit set in `mods`. See the open question below before reading anything into this.
+- **Reports have to be decoded whether or not we asked for the mode;** nothing else uses parameter 27 (per the vt keycode table), so decoding it costs nothing and cannot be confused for anything. A program that sets mode 2 and is killed before restoring should leave the terminal in it regardless of what we do; this is yet to be tested, but is logically consistent.
+- **Mode 1 is not enough to disambiguate ctrl+h;** under `CSI > 4 ; 1 m` it's still BS/0x08, only mode 2 reports it as `CSI 27;5;104~`.
+- **`CSI > 4 m` with no parameter reports 0 afterwards;** sending `CSI > 4 ; 2 m` then `CSI > 4 m` leaves `CSI ? 4 m` answering 0. Can't tell whether that means "sets 0" or "restores whatever it was" until the initial-value question below is figured out.
+- **Keys that don't change:** function and cursor keys keep their ordinary forms and mods bitfield (`ESC OP` for f1, `CSI 1;5P` for ctrl+f1, `CSI A` for up, `CSI 1;5A` for ctrl+up), and backspace stays `0x7f` even with ctrl held, since it is not an "other key". Keys whose base character is a control code appear under that code: ctrl+enter is `CSI 27;5;13~` and ctrl+tab is `CSI 27;5;9~`.
+
+Things that still need more testing:
+- **What the initial value actually is, and whether mode 2 really escapes shift on its own.** Sending `CSI ? 4 m` answered `CSI > 4 ; 2 m` before anything had been sent; the logical conclusion is that mode 2 is the default, which would mean stock xterm breaks typing capital letters, which is obviously wrong, so at least one of these is being misread.
+- **Whether meta is encoded.** Sending `Left Meta + A` through UTM didn't emit `CSI 27 ; ... ~` and just sent `a` as plain text, but it seems to just map to mod4/super (verified ad hoc by accidentally triggering i3's "focus parent container" default binding with `$mod` set to mod4) so the meta bit wasn't actually ever tested.
+
+VTE already never claims to implement `modifyOtherKeys` anywhere, so this info isn't new, but testing it in xfce4-terminal confirms it: sending `CSI > 4 ; 2 m` doesn't change any behavior, and `CSI ? 4 m` is unanswered.
+
+-----
+
+## kitty keyboard protocol
 
 | Name      | As of commit           | Progressive enhancements          | Max stack depth                                         | Spec compliant? (see notes below if no)                                                                                                     | Affects us?                                                                |
 | --------- | ---------------------- | --------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
@@ -15,7 +146,7 @@
 
 ### base layout key omission
 
-The form is `CSI key : shifted : base ; mods u`, and the aforementioned "4 omits base layout key" terminals omit the `: base` form; Ctrl+C on a Russian layout is `CSI 1089::99;5u` on kitty/foot/ghostty/wezterm/iTerm2 but `CSI 1089;5u` on rio/alacritty/contour. The spec's wording is permissive and says terminals *can* send two additional codepoints:
+The form is `CSI key : shifted : base ; mods u`, and the aforementioned "4 omits base layout key" terminals omit the `: base` form; ctrl+c on a Russian layout is `CSI 1089::99;5u` on kitty/foot/ghostty/wezterm/iTerm2 but `CSI 1089;5u` on rio/alacritty/contour. The spec's wording is permissive and says terminals *can* send two additional codepoints:
 > If alternate key reporting is requested by the program running in the terminal, the terminal can send two additional Unicode codepoints, the shifted key and base layout key, separated by colons.
 
 So this is not a spec violation in of itself.
@@ -131,7 +262,7 @@ But does practically mean `CSI > 4 ; 2 m` wipes out whatever an outer program pu
 
 ### stack behavior violations and us
 
-Alacritty and iTerm2's stack-overflow bugs aren't practically reachable beacuse we push exactly once per session: `TermProxy::enable_sequence` sends one `CSI > flags u` at startup and `RestoreGuard` sends one `CSI < u` at exit; `term::negotiate::sync_terminal_flags` sends `CSI = flags u`, not a push.
+alacritty and iTerm2's stack-overflow bugs aren't practically reachable beacuse we push exactly once per session: `TermProxy::enable_sequence` sends one `CSI > flags u` at startup and `RestoreGuard` sends one `CSI < u` at exit; `term::negotiate::sync_terminal_flags` sends `CSI = flags u`, not a push.
 
 A child spamming pushes doesn't reach them either; `TermProxy::handle_event` classifies the child's kitty controls as `Suppress` and, instead of forwarding them, sends them to our own stack in `term::mode` instead, which is a depth of 8 and has correct overflow behavior.
 
@@ -157,27 +288,4 @@ This is a significant breakage, and there isn't much we can do here; we're targe
 
 The XTMODKEYS wipe behavior is not an issue right now, since we only ever decode `modifyOtherKeys` reports and never send XTMODKEYS. It does, however, mean a future `modifyOtherKeys` protocol rank being usable alongside kitty on iTerm2 is not a possibility: negotiating it entails sending `CSI > 4 ; 2 m`, which destroys the kitty keyboard state, including whatever an outer program pushed before us. The two protocols are mutually exclusive on iTerm2, and getting it wrong not only misbehaves but breaks outer programs.
 
-The `CSI = flags ; mode u` stickiness is, though; see above in "stack behavior violations and us".
-
------
-
-## xterm `modifyOtherKeys`
-
-Empirically derived on a fresh xterm install on Arch; `xrdb -query` came up empty, so it's either defaults or popular-distro-defaults:
-- **Shifted characters are escaped once mode 2 has been set;** after explicitly sending `CSI > 4 ; 2 m`, shift+a is `CSI 27;2;65~`, i.e. the *shifted* glyph as `code` + the shift bit set in `mods`. See the open question below before reading anything into this.
-- **Reports have to be decoded whether or not we asked for the mode;** nothing else uses parameter 27, so decoding it costs nothing and cannot be confused for anything, and a program that sets mode 2 and is killed before restoring leaves the terminal in it regardless of what we do.
-- **Mode 1 is not enough to disambiguate ctrl+h;** under `CSI > 4 ; 1 m` it's still BS/0x08, only mode 2 reports it as `CSI 27;5;104~`.
-- **`CSI > 4 m` with no parameter reports 0 afterwards;** sending `CSI > 4 ; 2 m` then `CSI > 4 m` leaves `CSI ? 4 m` answering 0. Can't tell whether that means "sets 0" or "restores whatever it was" until the initial-value question below is figured out.
-- **Keys that don't change:** function and cursor keys keep their ordinary forms and mods bitfield (`ESC OP` for f1, `CSI 1;5P` for ctrl+f1, `CSI A` for up, `CSI 1;5A` for ctrl+up), and backspace stays `0x7f` even with ctrl held, since it is not an "other key". Keys whose base character is a control code appear under that code: ctrl+enter is `CSI 27;5;13~` and ctrl+tab is `CSI 27;5;9~`.
-
-Things that still need more testing:
-- **What the initial value actually is, and whether mode 2 really escapes shift on its own.** Sending `CSI ? 4 m` answered `CSI > 4 ; 2 m` before anything had been sent; the logical conclusion is that mode 2 is the default, which would mean stock xterm breaks typing capital letters, which is obviously wrong, so at least one of these is being misread.
-- **Whether meta is encoded.** Sending Left Meta + A through UTM didn't emit `CSI 27 ; ... ~` and just sent `a` as plain text, but it seems to just map to mod4/super (verified ad hoc by accidentally triggering i3's "focus parent container" default binding with `$mod` set to mod4) so the meta bit wasn't actually ever tested.
-
-VTE already never claims to implement `modifyOtherKeys` anywhere, so this info isn't new, but testing it in xfce4-terminal confirms it: sending `CSI > 4 ; 2 m` doesn't change any behavior, and `CSI ? 4 m` is unanswered.
-
-### DA1 as a query sentinel
-
-Every terminal tested (caveat: that's two terminals) answers `CSI c` even if it ignored the capability query that was sent alongside, making "doesn't support this" distinguishable from "hasn't answered yet", and is why `term::query` adds DA1 at the end of the batch.
-
-Replies seen, which also serve to identify the two: xterm `CSI ?64;1;2;6;9;15;17;18;21;22;28 c`, xfce4-terminal `CSI ?61;1;21;22;28 c`.
+The `CSI = flags ; mode u` stickiness is, though; see "stack behavior violations and us".

@@ -227,14 +227,20 @@ impl ConfigLoader {
             path: path.clone(),
             err: e,
         })?;
-        let file = self.sources.add_file(path.clone(), text.clone());
+        let file = self.sources.add_file(path.clone(), text);
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
 
         let mut seen_non_version_stmt_here = false;
-        for (line_no, line) in text.lines().enumerate() {
+        for line_no in 0.. {
             let ctx = LineCtx {
                 file,
                 line: line_no,
+            };
+            // the text lives in `self.sources` while `apply_parsed_stmt` wants `&mut self`, so the
+            // line is fetched fresh each iteration instead of iterating a borrow across the body.
+            // `Stmt` owns its strings, so the borrow ends the moment `parse_line` returns
+            let Some(line) = self.sources.line(ctx) else {
+                break;
             };
             if let Some(stmt) = parse_line(line, ctx)? {
                 self.apply_parsed_stmt(stmt, is_root, base_dir, &mut seen_non_version_stmt_here)?;
@@ -423,14 +429,20 @@ mod tests {
         parse(path).unwrap_err()
     }
 
-    fn semantic_err_kind(mapping: &str) -> ErrorKind {
+    fn semantic_err(mapping: &str) -> (ErrorKind, Span) {
         let dir = tempfile::tempdir().unwrap();
         let root = write_file(&dir, "root.conf", &format!("@version 1\n{mapping}\n"));
 
         match parse_err(&root) {
-            ConfigLoadError::Semantic(crate::config::lower::ConfigError { kind, .. }) => kind,
+            ConfigLoadError::Semantic(crate::config::lower::ConfigError { kind, span }) => {
+                (kind, span)
+            }
             other => panic!("expected a semantic error for {mapping:?}, got {other:?}"),
         }
+    }
+
+    fn semantic_err_kind(mapping: &str) -> ErrorKind {
+        semantic_err(mapping).0
     }
 
     fn protcool_err_span_text(mapping: &str) -> String {
@@ -1467,6 +1479,78 @@ force_backspace_sends_del = true
             PUSH_OVERHEAD_BYTES + 1
         );
         assert_eq!(cfg.options.pty_input_queue_bytes, 1);
+    }
+
+    #[test]
+    fn a_modifier_repeated_in_one_conjunction_is_rejected() {
+        for mapping in [
+            // sources
+            "key(f1, ctrl & ctrl) => send_key('x')",
+            "key(f1, ctrl & alt & ctrl) => send_key('x')",
+            "key(f1, (ctrl || alt) & ctrl) => send_key('x')",
+            // and targets
+            "key(f1) => send_key('x', ctrl & ctrl)",
+            "key(f1) => send_key('x', shift & alt & shift)",
+        ] {
+            let kind = semantic_err_kind(mapping);
+            assert!(
+                matches!(kind, ErrorKind::DuplicateModifier { .. }),
+                "{mapping:?} should have been rejected, got {kind:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_modifier_names_it_and_blames_the_later_occurrence() {
+        let src = "key(f1, ctrl & alt & ctrl) => send_key('x')";
+        let (kind, span) = semantic_err(src);
+
+        let ErrorKind::DuplicateModifier { name } = &kind else {
+            panic!("expected a duplicate modifier error, got {kind:?}");
+        };
+        assert_eq!(name, "ctrl");
+
+        // the caret sits on the repeat rather than the whole modifier list, and on the second
+        // `ctrl` rather than the first
+        assert_eq!(&src[span.start..span.end], "ctrl");
+        assert!(span.start > src.find("alt").unwrap());
+    }
+
+    #[test]
+    fn a_modifier_set_alternative_repeated_in_one_pattern_is_rejected() {
+        for mapping in [
+            "key(f1, ctrl || ctrl) => send_key('x')",
+            "key(f1, ctrl || alt || ctrl) => send_key('x')",
+            "key(f1, none || none) => send_key('x')",
+            // the same set spelled two different ways still collides
+            "key(f1, (ctrl & shift) || (shift & ctrl)) => send_key('x')",
+        ] {
+            let kind = semantic_err_kind(mapping);
+            assert!(
+                matches!(kind, ErrorKind::DuplicateModsAlt),
+                "{mapping:?} should have been rejected, got {kind:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn distinct_modifiers_and_alternatives_stay_accepted() {
+        for mapping in [
+            "key(f1, ctrl & alt) => send_key('x')",
+            "key(f1, ctrl & alt & shift) => send_key('x')",
+            // distinct alternatives that each mention a modifier the other doesn't
+            "key(f1, (ctrl & shift) || (alt & shift)) => send_key('x')",
+            // a bare modifier and a superset of it are different sets, so both may be listed
+            "key(f1, ctrl || (ctrl & shift)) => send_key('x')",
+            // `none` shares no bit with anything
+            "key(f1, none) => send_key('x')",
+            "key(f1, none || ctrl) => send_key('x')",
+            "key(f1) => send_key('x', ctrl & alt)",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = write_file(&dir, "root.conf", &format!("@version 1\n{mapping}\n"));
+            assert!(parse(&root).is_ok(), "{mapping:?} should be accepted");
+        }
     }
 
     #[test]

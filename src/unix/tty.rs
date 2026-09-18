@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 belshftl
 // SPDX-License-Identifier: MIT
 
+use anyhow::Context as _;
 use libc::{stat, termios, winsize};
 use std::ffi::CStr;
 use std::io::{Error, IsTerminal};
@@ -193,32 +194,14 @@ pub struct PtyPair {
     pub slave: OwnedFd,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum PtyOpenError {
-    #[error("posix_openpt: {0}")]
-    PosixOpenpt(std::io::Error),
-
-    #[error("grantpt: {0}")]
-    Grantpt(std::io::Error),
-
-    #[error("unlockpt: {0}")]
-    Unlockpt(std::io::Error),
-
-    #[error("ptsname: {0}")]
-    Ptsname(std::io::Error),
-
-    #[error("open() slave PTY: {0}")]
-    OpenSlave(std::io::Error),
-}
-
 static PTSNAME_LOCK: Mutex<()> = Mutex::new(());
 
-pub fn open_pty_pair() -> Result<PtyPair, PtyOpenError> {
+pub fn open_pty_pair() -> anyhow::Result<PtyPair> {
     // SAFETY: `posix_openpt` takes no pointer arguments, called with valid flag bits here
     let master_raw_fd =
         unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
     if master_raw_fd < 0 {
-        return Err(PtyOpenError::PosixOpenpt(Error::last_os_error()));
+        return Err(Error::last_os_error()).context("opening the pty master");
     }
 
     // SAFETY: `master_raw_fd` was returned by successful `posix_openpt`, is open, and is not owned
@@ -228,13 +211,13 @@ pub fn open_pty_pair() -> Result<PtyPair, PtyOpenError> {
     // SAFETY: `master.as_raw_fd()` is a valid fd from a successful `posix_openpt`; `grantpt` does
     // not take ownership of it
     if unsafe { libc::grantpt(master.as_raw_fd()) } < 0 {
-        return Err(PtyOpenError::Grantpt(Error::last_os_error()));
+        return Err(Error::last_os_error()).context("granting access to the pty slave");
     }
 
     // SAFETY: `master.as_raw_fd()` is a valid fd from a successful `posix_openpt` + `grantpt`;
     // `unlockpt` does not take ownership of it
     if unsafe { libc::unlockpt(master.as_raw_fd()) } < 0 {
-        return Err(PtyOpenError::Unlockpt(Error::last_os_error()));
+        return Err(Error::last_os_error()).context("unlocking the pty");
     }
 
     let name = {
@@ -246,7 +229,7 @@ pub fn open_pty_pair() -> Result<PtyPair, PtyOpenError> {
         // `unlockpt`
         let name_ptr = unsafe { libc::ptsname(master.as_raw_fd()) };
         if name_ptr.is_null() {
-            return Err(PtyOpenError::Unlockpt(Error::last_os_error()));
+            return Err(Error::last_os_error()).context("reading the pty slave name");
         }
 
         // SAFETY: earlier successful `ptsname` returned a valid C string stored in static storage
@@ -261,7 +244,7 @@ pub fn open_pty_pair() -> Result<PtyPair, PtyOpenError> {
         )
     };
     if slave_raw_fd < 0 {
-        return Err(PtyOpenError::OpenSlave(Error::last_os_error()));
+        return Err(Error::last_os_error()).context("opening the pty slave");
     }
 
     // SAFETY: `slave_raw_fd` is a valid fd, ownership transfers from `slave_raw_fd` to `slave`
